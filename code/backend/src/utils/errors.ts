@@ -45,3 +45,9 @@ export class PayloadTooLargeError extends AppError {
     super(413, message);
   }
 }
+
+export class TooManyRequestsError extends AppError {
+  constructor(message = 'Too many requests. Please try again later.') {
+    super(429, message);
+  }
+}

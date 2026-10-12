@@ -16,3 +16,8 @@ if (process.env.NODE_ENV === 'production') {
 // once at import time, so it must be set before any test file imports
 // app/env/storage modules.
 process.env.UPLOAD_DIR = 'tests/tmp-uploads';
+
+// Rate limits are off for the general suite (many tests log in and upload
+// in quick succession from one client). tests/rateLimit.test.ts turns them
+// on explicitly through createApp() options.
+process.env.RATE_LIMIT_ENABLED = 'false';
