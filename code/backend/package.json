@@ -15,7 +15,10 @@
     "prisma:seed": "ts-node prisma/seed.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "test:db:status": "ts-node scripts/withTestEnv.ts prisma migrate status",
+    "test:db:migrate": "ts-node scripts/withTestEnv.ts prisma migrate deploy",
+    "test:db:seed": "ts-node scripts/withTestEnv.ts prisma db seed"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

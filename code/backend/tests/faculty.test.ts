@@ -96,9 +96,11 @@ const FREE_ITEM_OVERRIDES = { printType: 'COLOR', paperSize: 'LETTER', sides: 'D
 let cseFacultyShop: PrintShop;
 let normalShop: PrintShop;
 let cseFreePricingRuleId: string;
-let normalPricingRuleId: string;
 
-const past = new Date('2020-01-01T00:00:00.000Z');
+// Offset by the run's start time so a rule left behind by a crashed earlier
+// run can never collide with this run's rule on the
+// (shop, printType, paperSize, sides, effectiveFrom) unique index.
+const past = new Date(Date.UTC(2020, 0, 1) + (Date.now() % 86_400_000));
 
 beforeAll(async () => {
   cseFacultyShop = await prisma.printShop.upsert({
@@ -137,7 +139,7 @@ beforeAll(async () => {
     },
   });
 
-  const normalRule = await prisma.shopPricingRule.create({
+  await prisma.shopPricingRule.create({
     data: {
       shopId: normalShop.shopId,
       printType: 'BW',
@@ -147,22 +149,24 @@ beforeAll(async () => {
       effectiveFrom: past,
     },
   });
-  normalPricingRuleId = normalRule.pricingRuleId;
 });
 
 afterAll(async () => {
-  await prisma.orderDocument.deleteMany({
-    where: { pricingRuleId: { in: [cseFreePricingRuleId, normalPricingRuleId] } },
-  });
-  await prisma.queue.deleteMany({
-    where: { order: { shopId: { in: [cseFacultyShop.shopId, normalShop.shopId] } } },
-  });
-  await prisma.payment.deleteMany({
-    where: { order: { shopId: { in: [cseFacultyShop.shopId, normalShop.shopId] } } },
-  });
-  await prisma.order.deleteMany({ where: { shopId: { in: [cseFacultyShop.shopId, normalShop.shopId] } } });
-  await prisma.shopPricingRule.delete({ where: { pricingRuleId: cseFreePricingRuleId } });
-  await prisma.printShop.delete({ where: { shopId: normalShop.shopId } });
+  // Only ever remove data this test file itself created. CSE_FACULTY is the
+  // real seeded shop, so cleanup is scoped to orders placed by this file's
+  // test-prefixed users - never to every order at that shop. Queue,
+  // OrderDocument and OrderStatusHistory rows cascade with their order.
+  const testOwnedOrder = { user: { email: { startsWith: TEST_EMAIL_PREFIX } } };
+  await prisma.refund.deleteMany({ where: { payment: { order: testOwnedOrder } } });
+  await prisma.payment.deleteMany({ where: { order: testOwnedOrder } });
+  await prisma.order.deleteMany({ where: testOwnedOrder });
+  if (cseFreePricingRuleId) {
+    await prisma.shopPricingRule.delete({ where: { pricingRuleId: cseFreePricingRuleId } });
+  }
+  if (normalShop) {
+    await prisma.shopPricingRule.deleteMany({ where: { shopId: normalShop.shopId } });
+    await prisma.printShop.delete({ where: { shopId: normalShop.shopId } });
+  }
   await prisma.user.deleteMany({ where: { email: { startsWith: TEST_EMAIL_PREFIX } } });
   await prisma.$disconnect();
 });
