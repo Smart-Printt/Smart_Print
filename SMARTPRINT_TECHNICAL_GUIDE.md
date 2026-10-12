@@ -399,10 +399,10 @@ React → POST /api/orders/:orderId/payment/confirm  {}
 9. Controller sends `res.json({ success:true, data:{ order } })`.
 10. Frontend receives JSON and renders it.
 
-**`DATABASE_URL` breakdown:** `postgresql://postgres:postgres123@localhost:5432/smartprint`
+**`DATABASE_URL` breakdown:** `postgresql://postgres:PASSWORD@localhost:5432/smartprint`
 - `postgresql://` — protocol/database type
 - `postgres` — username
-- `postgres123` — password
+- `PASSWORD` — placeholder for the database password. Set the real value only in your local, git-ignored `.env`; never write it in docs or commit it.
 - `localhost` — host (where Postgres is running)
 - `5432` — port (Postgres default)
 - `smartprint` — database name
