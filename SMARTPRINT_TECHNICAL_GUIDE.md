@@ -136,8 +136,8 @@ PostgreSQL (localhost:5432, database "smartprint")
 
 **Folder structure** (`code/frontend/src/`):
 - `pages/` — split by role: `auth/`, `student/`, `staff/`, `admin/`, `shared/`, `errors/`
-- `components/` — `NavBar.tsx`, `ProtectedRoute.tsx`, `StatusBadge.tsx`, plus `ui/` and `staff/` subfolders
-- `services/` — one API-wrapper file per backend resource: `authApi.ts`, `orderApi.ts`, `paymentApi.ts`, `documentApi.ts`, `queueApi.ts`, `refundApi.ts`, `pricingApi.ts`, `shopApi.ts`, `shopQueueApi.ts`, `adminStaffApi.ts`, plus `apiClient.ts` (the shared `fetch` wrapper) and `client.ts`/`types.ts`
+- `components/` — `StatusBadge.tsx`, plus `ui/` and `staff/` subfolders (route protection lives in `routes/guards.tsx`)
+- `services/` — one API-wrapper file per backend resource: `authApi.ts`, `orderApi.ts`, `paymentApi.ts`, `documentApi.ts`, `queueApi.ts`, `refundApi.ts`, `pricingApi.ts`, `shopApi.ts`, `shopQueueApi.ts`, `adminStaffApi.ts`, plus `apiClient.ts` (the shared `fetch` wrapper) and `index.ts` (re-exports)
 - `context/` — `AuthContext.tsx` (global logged-in user + token), `ToastContext.tsx` (notifications)
 - `routes/guards.tsx` — `RequireAuth`, `RequireGuest`, `RequireRole` route wrappers
 - `hooks/` — `useAuth.ts`, `useToast.ts`, `useDebouncedValue.ts`
@@ -175,7 +175,7 @@ Purpose: track one order's status/history, pay, cancel, request refund.
 API calls: `GET /api/orders/:id`, `POST /api/orders/:orderId/payment`, `POST /api/orders/:orderId/payment/confirm`, `PATCH /api/orders/:id/cancel`, `POST /api/orders/:orderId/refund`
 Backend endpoint: `order.routes.ts`, `payment.routes.ts`, `refund.routes.ts`
 
-**PAGE: StaffDashboardPage / StaffQueue** (`pages/staff/StaffDashboardPage.tsx`)
+**PAGE: StaffDashboardPage** (`pages/staff/StaffDashboardPage.tsx`)
 Purpose: shop staff's queue view — see waiting orders, start next, mark ready.
 API calls: `GET /api/shops/:shopId/queue`, `POST /api/shops/:shopId/queue/start-next`, `PATCH /api/shops/:shopId/queue/:queueId/complete`
 Backend endpoint: `shopQueue.routes.ts`
