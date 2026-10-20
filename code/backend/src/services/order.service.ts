@@ -4,6 +4,7 @@ import { Order, OrderDocument, OrderStatusHistory, Prisma, PrintShop, UserRole }
 
 import { CANCELLABLE_ORDER_STATUSES, MAX_SPECIAL_INSTRUCTIONS_LENGTH } from '../config/orderPolicy';
 import { prisma } from '../config/prisma';
+import { lockOrder, lockShop, transitionOrder } from './orderLocks';
 import * as pricingService from './pricing.service';
 import * as queueService from './queue.service';
 import * as shopService from './shop.service';
@@ -189,6 +190,31 @@ export async function createOrder(
   const orderCode = generateOrderCode();
 
   const created = await prisma.$transaction(async (tx) => {
+    // Lock order: shop -> order -> queue (see orderLocks.ts). Only a free
+    // order enqueues here, so only it needs the shop lock.
+    if (isFreeFacultyOrder) {
+      await lockShop(tx, shop.shopId);
+    }
+
+    // The documents were validated before this transaction opened; a
+    // concurrent deleteDocument could have removed one since. Share-locking
+    // them (in a fixed order) makes the existence/ownership check binding:
+    // deleteDocument takes the same rows FOR UPDATE, so from here until
+    // commit no referenced document can be deleted, and one that is already
+    // gone is reported as 404 instead of surfacing as a foreign-key failure.
+    const documentIds = [...new Set(finalItems.map((item) => item.documentId))].sort();
+    const lockedDocuments = await tx.$queryRaw<{ document_id: string; user_id: string }[]>`
+      SELECT document_id, user_id FROM documents
+      WHERE document_id IN (${Prisma.join(documentIds)})
+      ORDER BY document_id
+      FOR SHARE`;
+    if (
+      lockedDocuments.length !== documentIds.length ||
+      lockedDocuments.some((row) => row.user_id !== userId)
+    ) {
+      throw new NotFoundError('Document not found');
+    }
+
     await tx.order.create({
       data: {
         orderId,
@@ -231,7 +257,7 @@ export async function createOrder(
     // (see payment.service.ts::confirmPayment). This is still the single
     // CSE_FACULTY queue - no separate faculty queue is created.
     if (isFreeFacultyOrder) {
-      await queueService.enqueueOrderWithinTransaction(tx, shop.shopId, orderId, userId);
+      await queueService.enqueueOrderWithinTransaction(tx, shop.shopId, orderId, userId, 'PLACED');
     }
 
     return tx.order.findUniqueOrThrow({ where: { orderId }, include: ORDER_INCLUDE });
@@ -346,6 +372,14 @@ export async function getOrderRowOrThrow(orderId: string): Promise<Order> {
   return order;
 }
 
+function assertCancellable(status: string): void {
+  if (!CANCELLABLE_ORDER_STATUSES.includes(status as never)) {
+    throw new ConflictError(
+      `Order cannot be cancelled once it is ${status} - printing may have already started`,
+    );
+  }
+}
+
 export async function cancelOrder(
   userId: string,
   orderId: string,
@@ -355,24 +389,23 @@ export async function cancelOrder(
     throw new ValidationError('reason must be a string');
   }
 
+  // Ownership / existence / shop are read here, before any lock. The status
+  // is only used for an early, cheap rejection - the decision is re-made
+  // below, under the locks, from the row as it is at that moment.
   const order = await findOwnedOrderOrThrow(userId, orderId);
-
-  if (!CANCELLABLE_ORDER_STATUSES.includes(order.orderStatus as never)) {
-    throw new ConflictError(
-      `Order cannot be cancelled once it is ${order.orderStatus} - printing may have already started`,
-    );
-  }
+  assertCancellable(order.orderStatus);
 
   const trimmedReason = typeof reason === 'string' ? reason.trim() || null : null;
 
   const updated = await prisma.$transaction(async (tx) => {
-    await tx.order.update({
-      where: { orderId },
-      data: {
-        orderStatus: 'CANCELLED',
-        cancelledAt: new Date(),
-        cancelledReason: trimmedReason,
-      },
+    // Lock order: shop -> order -> queue (see orderLocks.ts).
+    await lockShop(tx, order.shopId);
+    const locked = await lockOrder(tx, orderId);
+    assertCancellable(locked.orderStatus);
+
+    await transitionOrder(tx, orderId, locked.orderStatus, 'CANCELLED', {
+      cancelledAt: new Date(),
+      cancelledReason: trimmedReason,
     });
 
     await tx.orderStatusHistory.create({
@@ -384,10 +417,9 @@ export async function cancelOrder(
       },
     });
 
-    // Phase 7: a QUEUED order has a Queue row (WAITING - an order can never
-    // be cancelled once PRINTING, so it can never be anything else here).
-    // Cancelling the order must also cancel its place in line, not leave a
-    // stale WAITING entry that start-next could still pick up.
+    // A QUEUED order has a WAITING queue entry; cancelling the order must
+    // also cancel its place in line. Because the order is locked and was
+    // QUEUED (never PRINTING), the entry cannot have started in between.
     await tx.queue.updateMany({
       where: { orderId, queueStatus: 'WAITING' },
       data: { queueStatus: 'CANCELLED', cancelledAt: new Date() },
