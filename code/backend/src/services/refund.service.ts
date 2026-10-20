@@ -7,7 +7,7 @@ import { prisma } from '../config/prisma';
 import * as orderService from './order.service';
 import { assertValidSimulateOutcome } from './payment.service';
 import * as shopService from './shop.service';
-import { paymentProvider } from './payments/mockPaymentProvider';
+import { paymentProvider } from './payments';
 import { ProviderOutcome } from './payments/paymentProvider';
 import { ProcessRefundInput, RequestRefundInput, SafeRefund } from '../types/refund.types';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';

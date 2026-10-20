@@ -1,9 +1,13 @@
-import cors from 'cors';
 import express, { Application } from 'express';
+import helmet from 'helmet';
 
 import { env } from './config/env';
+import { RateLimitConfig, RateLimitName, RateLimitRule, loadSecurityConfig } from './config/security';
+import { authenticate } from './middleware/auth.middleware';
+import { createCorsMiddleware } from './middleware/cors.middleware';
 import { errorHandler } from './middleware/errorHandler';
 import { notFoundHandler } from './middleware/notFound';
+import { createRateLimiters } from './middleware/rateLimit.middleware';
 import { adminStaffRouter } from './routes/adminStaff.routes';
 import { authRouter } from './routes/auth.routes';
 import { documentRouter } from './routes/document.routes';
@@ -18,11 +22,43 @@ import { shopPricingRouter } from './routes/shopPricing.routes';
 import { shopQueueRouter } from './routes/shopQueue.routes';
 import { testRouter } from './routes/test.routes';
 
-export function createApp(): Application {
+// Optional overrides of the environment-derived security settings, used by
+// tests to exercise CORS and rate limiting without changing process.env.
+export interface CreateAppOptions {
+  corsAllowedOrigins?: string[];
+  trustProxy?: number | false;
+  rateLimit?: { enabled?: boolean } & Partial<Record<RateLimitName, RateLimitRule>>;
+}
+
+export function createApp(options: CreateAppOptions = {}): Application {
+  const security = loadSecurityConfig();
+  const corsAllowedOrigins = options.corsAllowedOrigins ?? security.corsAllowedOrigins;
+  const trustProxy = options.trustProxy ?? security.trustProxy;
+  const rateLimitConfig: RateLimitConfig = { ...security.rateLimit, ...options.rateLimit };
+
   const app = express();
 
-  app.use(cors());
+  // Needed for correct client IPs (and so per-IP rate limits) behind a
+  // reverse proxy; off unless TRUST_PROXY sets the number of proxy hops.
+  app.set('trust proxy', trustProxy);
+
+  // Security headers, including X-Content-Type-Options: nosniff, and
+  // removal of X-Powered-By.
+  app.use(helmet());
+  app.use(createCorsMiddleware(corsAllowedOrigins));
   app.use(express.json());
+
+  // Rate limits run before the routers that own these paths. Each handler
+  // calls next() when under the limit, so the request continues to the
+  // matching router unchanged.
+  const limiters = createRateLimiters(rateLimitConfig);
+  app.post('/api/auth/login', limiters.authIp, limiters.login);
+  app.post('/api/auth/register', limiters.authIp, limiters.register);
+  app.post('/api/auth/forgot-password', limiters.authIp, limiters.forgotPassword);
+  app.post('/api/auth/reset-password', limiters.authIp, limiters.resetPassword);
+  // Authenticated so the limit is per user; ahead of multer in
+  // documentRouter so a rejected upload is never read into memory.
+  app.post('/api/documents', authenticate, limiters.upload);
 
   app.use(healthRouter);
   app.use('/api/auth', authRouter);

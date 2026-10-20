@@ -8,7 +8,7 @@ import { prisma } from '../config/prisma';
 import * as orderService from './order.service';
 import * as queueService from './queue.service';
 import * as shopService from './shop.service';
-import { paymentProvider } from './payments/mockPaymentProvider';
+import { paymentProvider } from './payments';
 import { ProviderOutcome } from './payments/paymentProvider';
 import { ConfirmPaymentInput, InitiatePaymentInput, SafePayment } from '../types/payment.types';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
