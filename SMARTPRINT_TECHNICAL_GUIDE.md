@@ -13,7 +13,7 @@
 4. Passwords are hashed with **bcrypt**, never stored plain (`utils/password.ts`).
 5. Order lifecycle: `PLACED → PAYMENT_CONFIRMED → QUEUED → PRINTING → READY → COLLECTED` (or `CANCELLED`).
 6. Price is **always computed server-side** from `ShopPricingRule` — client-sent prices are never trusted (`pricing.service.ts`).
-7. Queue is **strict FIFO** ordered by `enteredAt` — no priority logic exists (`queue.service.ts`).
+7. Queue is **strict FIFO** ordered by `queueNumber` (allocated under the shop lock) — no priority logic exists (`queue.service.ts`).
 8. Payment is **MOCK/SIMULATED** (`payments/mockPaymentProvider.ts`) — no real gateway.
 9. FACULTY printing at shop `CSE_FACULTY` is free (₹0, no payment step) — everywhere else FACULTY pays like a STUDENT.
 10. A payment successfully confirming and the order entering the queue happen in **one atomic DB transaction** — this is the single most important "why Prisma/transactions" answer.
@@ -483,10 +483,10 @@ Upload (multipart form, field "file")
 
 **Technical explanation:**
 - `Queue` model: one row per order, `queueStatus` ∈ `WAITING | PRINTING | COMPLETED | CANCELLED`.
-- FIFO ordering is **always** `ORDER BY enteredAt ASC, queueId ASC` (`queue.service.ts::FIFO_ORDER`) — never by price, copies, or user.
+- FIFO ordering is **always** `ORDER BY queueNumber ASC, queueId ASC` (`queue.service.ts::FIFO_ORDER`) — never by price, copies, or user. `queueNumber` is allocated as `max + 1` while holding the shop lock, so it is the exact order in which entries were serialized; `enteredAt` is an application-clock timestamp kept for display/audit and does not decide order.
 - `startNextForShop()`: locks the shop row (`SELECT ... FOR UPDATE`), checks no order is currently `PRINTING` at that shop (**only one printing job per shop at a time**), picks the oldest `WAITING` entry, flips it to `PRINTING`.
-- Position for a waiting order = count of WAITING entries at that shop with an earlier `enteredAt` (or same `enteredAt` but smaller `queueId` as a tiebreaker), +1. Position is **computed on read**, never stored — so it can never go stale when someone ahead completes/cancels.
-- **No priority field exists anywhere in the schema.** `queueNumber` is just a human-readable sequence number, explicitly commented in the schema as "must NOT be used to determine processing order."
+- Position for a waiting order = count of WAITING entries at that shop with a smaller `queueNumber` (or the same `queueNumber` but smaller `queueId` as a last-resort tiebreaker), +1. Position is **computed on read**, never stored — so it can never go stale when someone ahead completes/cancels.
+- **No priority field exists anywhere in the schema.** `queueNumber` is the per-shop sequence number; it doubles as the FIFO key because it is assigned under the shop lock.
 
 **"How does your queue work?" — short answer:**
 "It's a strict FIFO queue per shop. When a payment succeeds (or a faculty order is free), the order is atomically inserted into that shop's queue ordered by entry time. Staff can only start the oldest waiting order, and only one order can be printing per shop at a time. There's no priority logic — position is always purely by arrival time."
@@ -913,7 +913,7 @@ ResetPasswordPage → POST /api/auth/reset-password {token, password}
 - **Database:** `smartprint`, 13 tables, all defined in `prisma/schema.prisma`
 - **Main models:** User, Document, PrintShop, Order, OrderDocument, ShopPricingRule, ShopFinishingRule, Queue, Payment, Refund, OrderStatusHistory, PasswordResetToken
 - **Auth:** JWT (`{userId, role}`), bcrypt-hashed passwords, `authenticate` + `requireRole` middleware
-- **Queue logic:** strict FIFO by `enteredAt`, one PRINTING order per shop max
+- **Queue logic:** strict FIFO by `queueNumber`, one PRINTING order per shop max
 - **Payment:** MOCK provider (`mockPaymentProvider.ts`), interface-based for future real gateway
 - **Email:** dev-console fallback unless SMTP env vars set
 - **Key folders:** `code/backend/src/{routes,controllers,services}`, `code/frontend/src/{pages,services,context}`
