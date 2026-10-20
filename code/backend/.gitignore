@@ -2,5 +2,10 @@ node_modules/
 dist/
 *.log
 .env
+# Any other env file (e.g. .env.test with the test-database credentials)
+# stays local - only the credential-free templates are committed.
+.env.*
+!.env.example
+!.env.test.example
 uploads/
 tests/tmp-uploads/
