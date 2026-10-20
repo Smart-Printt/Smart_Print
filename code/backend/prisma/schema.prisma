@@ -1,5 +1,5 @@
 // SmartPrint - Backend Phase 1 database schema
-// FIFO printing queue is ordered by Queue.enteredAt (see FIFO note on the Queue model).
+// FIFO printing queue is ordered by Queue.queueNumber (see FIFO note on the Queue model).
 
 generator client {
   provider = "prisma-client-js"
@@ -311,9 +311,12 @@ model ShopFinishingRule {
   @@map("shop_finishing_rules")
 }
 
-// FIFO queue: WAITING entries must be retrieved ordered by enteredAt ASC.
-// queue_number is a human-readable token only and must NOT be used to
-// determine processing order. No priority score / weighting fields exist.
+// FIFO queue: WAITING entries are retrieved ordered by queue_number ASC (then
+// queue_id as a last-resort tie-break). queue_number is allocated as max + 1
+// per shop while the shop row is locked, so it is exactly the order in which
+// entries were serialized. entered_at is an application-clock timestamp
+// (millisecond resolution; it can tie or step backwards) kept for display and
+// audit - it does not decide order. No priority score / weighting fields exist.
 model Queue {
   queueId     String      @id @default(uuid()) @map("queue_id")
   orderId     String      @unique @map("order_id")
@@ -328,7 +331,7 @@ model Queue {
 
   @@index([enteredAt])
   @@index([queueStatus])
-  // Supports the FIFO retrieval query: WHERE queue_status = 'WAITING' ORDER BY entered_at ASC
+  // Supports listing WAITING entries by arrival time (display/audit); FIFO order itself is by queue_number.
   @@index([queueStatus, enteredAt])
   @@map("queue")
 }

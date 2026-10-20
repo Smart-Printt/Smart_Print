@@ -6,6 +6,7 @@ import { PAYABLE_ORDER_STATUSES } from '../config/orderPolicy';
 import { env } from '../config/env';
 import { prisma } from '../config/prisma';
 import * as orderService from './order.service';
+import { lockOrder, lockShop, transitionOrder } from './orderLocks';
 import * as queueService from './queue.service';
 import * as shopService from './shop.service';
 import { paymentProvider } from './payments';
@@ -41,6 +42,12 @@ export function assertValidSimulateOutcome(
   }
 }
 
+function assertPayable(status: string, action: string): void {
+  if (!PAYABLE_ORDER_STATUSES.includes(status as never)) {
+    throw new ConflictError(`Order cannot be ${action} while it is ${status}`);
+  }
+}
+
 function toSafePayment(payment: Payment): SafePayment {
   return {
     paymentId: payment.paymentId,
@@ -65,19 +72,19 @@ export async function initiatePayment(
   assertValidPaymentMethod(input.paymentMethod);
   const paymentMethod = input.paymentMethod;
 
+  // Existence / ownership / shop are read before any lock; the status is
+  // only an early rejection and is re-checked under the lock below.
   const order = await orderService.getOwnedOrderRowOrThrow(userId, orderId);
-
-  if (!PAYABLE_ORDER_STATUSES.includes(order.orderStatus as never)) {
-    throw new ConflictError(
-      `Order cannot be paid while it is ${order.orderStatus}`,
-    );
-  }
+  assertPayable(order.orderStatus, 'paid');
 
   const created = await prisma.$transaction(async (tx) => {
-    // Row-locks the order for the duration of the transaction so two
-    // concurrent "Pay" clicks cannot both pass the "no PENDING payment
-    // yet" check below and both create a payment.
-    await tx.$queryRaw`SELECT order_id FROM orders WHERE order_id = ${orderId} FOR UPDATE`;
+    // Lock order: shop -> order (see orderLocks.ts). Locking the order also
+    // stops two concurrent "Pay" clicks from both passing the "no PENDING
+    // payment yet" check below, and - because cancellation takes the same
+    // lock - stops a payment being started on an order cancelled meanwhile.
+    await lockShop(tx, order.shopId);
+    const locked = await lockOrder(tx, orderId);
+    assertPayable(locked.orderStatus, 'paid');
 
     const existingPending = await tx.payment.findFirst({
       where: { orderId, paymentStatus: 'PENDING' },
@@ -129,12 +136,8 @@ export async function confirmPayment(
     throw new NotFoundError('No pending payment found for this order');
   }
 
-  // The order may have been cancelled (or otherwise moved on) while this
-  // payment was still PENDING - never let a stale payment confirm SUCCESS
-  // against an order that is no longer payable.
-  if (!PAYABLE_ORDER_STATUSES.includes(order.orderStatus as never)) {
-    throw new ConflictError(`Order cannot be confirmed as paid while it is ${order.orderStatus}`);
-  }
+  // Early rejection only - the binding check is repeated under the lock.
+  assertPayable(order.orderStatus, 'confirmed as paid');
 
   const { outcome } = await paymentProvider.confirmPayment({
     providerReference: payment.transactionId,
@@ -142,6 +145,14 @@ export async function confirmPayment(
   });
 
   const updated = await prisma.$transaction(async (tx) => {
+    // Lock order: shop -> order -> queue (see orderLocks.ts). The order may
+    // have been cancelled (or otherwise moved on) since it was read above -
+    // never let a stale payment confirm SUCCESS against an order that is no
+    // longer payable.
+    await lockShop(tx, order.shopId);
+    const locked = await lockOrder(tx, orderId);
+    assertPayable(locked.orderStatus, 'confirmed as paid');
+
     // Atomic, WHERE-guarded update: if two confirm requests race, only the
     // one that observes paymentStatus still PENDING can flip it - the
     // loser sees count === 0 and is rejected below, so a payment can never
@@ -158,10 +169,7 @@ export async function confirmPayment(
     }
 
     if (outcome === 'SUCCESS') {
-      await tx.order.update({
-        where: { orderId },
-        data: { orderStatus: 'PAYMENT_CONFIRMED' },
-      });
+      await transitionOrder(tx, orderId, 'PLACED', 'PAYMENT_CONFIRMED');
       await tx.orderStatusHistory.create({
         data: {
           orderId,
@@ -174,7 +182,13 @@ export async function confirmPayment(
       // Phase 7: a successfully paid order immediately enters the print
       // queue, in this same transaction - never via a background scan, so
       // "payment SUCCESS" and "queue entry exists" can never disagree.
-      await queueService.enqueueOrderWithinTransaction(tx, order.shopId, orderId, userId);
+      await queueService.enqueueOrderWithinTransaction(
+        tx,
+        order.shopId,
+        orderId,
+        userId,
+        'PAYMENT_CONFIRMED',
+      );
     }
 
     return tx.payment.findUniqueOrThrow({ where: { paymentId: payment.paymentId } });

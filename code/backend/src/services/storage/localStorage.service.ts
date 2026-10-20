@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 
 import { StorageService } from './storage.service';
 
@@ -33,8 +34,22 @@ export class LocalStorageService implements StorageService {
     await fs.writeFile(target, data, { flag: 'wx' });
   }
 
-  getReadStream(storageKey: string): NodeJS.ReadableStream {
-    return createReadStream(this.resolveSafePath(storageKey));
+  openReadStream(storageKey: string): Promise<Readable> {
+    const target = this.resolveSafePath(storageKey);
+    const stream = createReadStream(target);
+    return new Promise<Readable>((resolve, reject) => {
+      const onOpen = (): void => {
+        stream.off('error', onError);
+        resolve(stream);
+      };
+      const onError = (err: Error): void => {
+        stream.off('open', onOpen);
+        stream.destroy();
+        reject(err);
+      };
+      stream.once('open', onOpen);
+      stream.once('error', onError);
+    });
   }
 
   async delete(storageKey: string): Promise<void> {
