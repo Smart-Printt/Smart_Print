@@ -2,8 +2,16 @@ import { api } from './apiClient'
 import type { ApiSuccess, CreateOrderInput, SafeOrder } from '@/types'
 
 export const orderApi = {
-  async create(input: CreateOrderInput): Promise<SafeOrder> {
-    const res = await api.post<ApiSuccess<{ order: SafeOrder }>>('/orders', input)
+  // The same idempotencyKey with the same input returns the order that the
+  // first call created instead of creating another, so a retry after a lost
+  // response or a double click can never place a duplicate order.
+  async create(input: CreateOrderInput, idempotencyKey?: string): Promise<SafeOrder> {
+    const res = await api.post<ApiSuccess<{ order: SafeOrder }>>(
+      '/orders',
+      input,
+      undefined,
+      idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    )
     return res.data.order
   },
 

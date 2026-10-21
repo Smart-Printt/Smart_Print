@@ -28,12 +28,13 @@ interface RequestOptions {
   body?: unknown
   isFormData?: boolean
   signal?: AbortSignal
+  headers?: Record<string, string>
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, isFormData, signal } = options
+  const { method = 'GET', body, isFormData, signal, headers: extraHeaders } = options
 
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = { ...extraHeaders }
   const token = getToken()
   if (token) {
     headers.Authorization = `Bearer ${token}`
@@ -87,8 +88,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { method: 'GET', signal }),
-  post: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
-    request<T>(path, { method: 'POST', body, signal }),
+  post: <T>(path: string, body?: unknown, signal?: AbortSignal, headers?: Record<string, string>) =>
+    request<T>(path, { method: 'POST', body, signal, headers }),
   patch: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'PATCH', body, signal }),
   delete: <T>(path: string, signal?: AbortSignal) => request<T>(path, { method: 'DELETE', signal }),
