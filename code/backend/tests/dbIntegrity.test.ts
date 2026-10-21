@@ -78,6 +78,7 @@ describe('catalog: the constraints Prisma cannot express exist under their docum
     'payments_paid_at_matches_status',
     'refunds_processed_at_matches_status',
     'shop_pricing_rules_effective_range',
+    'orders_idempotency_pair',
   ])('check constraint %s', async (name) => {
     const rows = await prisma.$queryRaw<{ conname: string }[]>`
       SELECT conname FROM pg_constraint WHERE contype = 'c' AND conname = ${name}`;
@@ -555,5 +556,64 @@ describe('orders, order items and pricing rules', () => {
         }),
       ),
     ).toContain('shop_finishing_rules_price_non_negative');
+  });
+});
+
+describe('order idempotency columns', () => {
+  const key = (suffix: string) => `dbint-key-${Date.now()}-${suffix}`;
+
+  async function insertOrder(
+    userId: string,
+    shopId: string,
+    idempotencyKey: string | null,
+    requestHash: string | null,
+  ) {
+    return prisma.$executeRaw`
+      INSERT INTO orders (order_id, order_code, user_id, shop_id, total_amount, updated_at,
+                          idempotency_key, idempotency_request_hash)
+      VALUES (gen_random_uuid()::text, ${`DBINT-${Math.random().toString(36).slice(2)}`}, ${userId}, ${shopId},
+              0, now(), ${idempotencyKey}, ${requestHash})`;
+  }
+
+  const HASH = 'a'.repeat(64);
+
+  it('is unique per (user, key) but not across users, and NULL keys never collide', async () => {
+    const shop = await fx.createShop('idem-unique');
+    const other = await fx.registerStudent('idem-other');
+    const k = key('unique');
+
+    await insertOrder(student.userId, shop.shopId, k, HASH);
+    expectUniqueViolationOn(
+      await rejection(insertOrder(student.userId, shop.shopId, k, HASH)),
+      'user_id',
+      'idempotency_key',
+    );
+    await insertOrder(other.userId, shop.shopId, k, HASH);
+
+    await insertOrder(student.userId, shop.shopId, null, null);
+    await insertOrder(student.userId, shop.shopId, null, null);
+  });
+
+  it('requires the key and its request hash together', async () => {
+    const shop = await fx.createShop('idem-pair');
+    expect(await rejection(insertOrder(student.userId, shop.shopId, key('pair'), null))).toContain(
+      'orders_idempotency_pair',
+    );
+    expect(await rejection(insertOrder(student.userId, shop.shopId, null, HASH))).toContain(
+      'orders_idempotency_pair',
+    );
+  });
+
+  it('rejects a malformed key or hash', async () => {
+    const shop = await fx.createShop('idem-format');
+    expect(await rejection(insertOrder(student.userId, shop.shopId, 'short', HASH))).toContain(
+      'orders_idempotency_key_format',
+    );
+    expect(await rejection(insertOrder(student.userId, shop.shopId, 'has spaces in it', HASH))).toContain(
+      'orders_idempotency_key_format',
+    );
+    expect(await rejection(insertOrder(student.userId, shop.shopId, key('fmt'), 'not-a-hash'))).toContain(
+      'orders_idempotency_hash_format',
+    );
   });
 });

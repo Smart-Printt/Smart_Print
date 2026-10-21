@@ -218,6 +218,13 @@ model Order {
   updatedAt       DateTime    @updatedAt @map("updated_at")
   cancelledAt     DateTime?   @map("cancelled_at")
   cancelledReason String?     @map("cancelled_reason")
+  // Order-creation idempotency (see order.service.ts::createOrder). Both are
+  // NULL for orders created without an Idempotency-Key header. The key is
+  // scoped to the user: the same key from two users is two unrelated keys.
+  // requestHash is a SHA-256 of the canonicalised request body, used to
+  // reject a key that is reused for a different request.
+  idempotencyKey         String? @map("idempotency_key")
+  idempotencyRequestHash String? @map("idempotency_request_hash")
 
   user           User                 @relation(fields: [userId], references: [userId])
   shop           PrintShop            @relation(fields: [shopId], references: [shopId])
@@ -236,6 +243,9 @@ model Order {
   // key); PostgreSQL still needs a unique index on exactly these columns
   // to accept the composite foreign key.
   @@unique([orderId, shopId])
+  // One order per (user, Idempotency-Key). PostgreSQL treats NULLs as
+  // distinct, so any number of orders may have no key.
+  @@unique([userId, idempotencyKey])
   @@map("orders")
 }
 

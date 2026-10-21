@@ -32,8 +32,14 @@ export function createCorsMiddleware(allowedOrigins: string[]): RequestHandler[]
     origin: [...allowed],
     credentials: false,
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    exposedHeaders: ['Content-Disposition', 'RateLimit', 'RateLimit-Policy', 'Retry-After'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+    exposedHeaders: [
+      'Content-Disposition',
+      'Idempotent-Replayed',
+      'RateLimit',
+      'RateLimit-Policy',
+      'Retry-After',
+    ],
     maxAge: 600,
   });
 
