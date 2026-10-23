@@ -16,6 +16,7 @@ import {
   SafeOrderStatusEvent,
 } from '../types/order.types';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
+import { hashCreateOrderRequest } from '../utils/idempotency';
 import { generateOrderCode } from '../utils/orderCode';
 
 type OrderWithRelations = Order & {
@@ -143,17 +144,74 @@ async function resolveOrderItem(
   };
 }
 
+export interface CreateOrderResult {
+  order: SafeOrder;
+  // true when an earlier request with the same Idempotency-Key already
+  // created this order and nothing new was written.
+  replayed: boolean;
+}
+
+function findOrderByIdempotencyKey(userId: string, idempotencyKey: string) {
+  return prisma.order.findUnique({
+    where: { userId_idempotencyKey: { userId, idempotencyKey } },
+    include: ORDER_INCLUDE,
+  });
+}
+
+// An existing order for this (user, key) is only a legitimate replay when the
+// request is the same one; the same key with a different body is a client bug
+// (or a reused key) and must never silently hand back an unrelated order.
+function replayExistingOrder(existing: OrderWithRelations, requestHash: string): CreateOrderResult {
+  if (existing.idempotencyRequestHash !== requestHash) {
+    throw new ConflictError('Idempotency-Key has already been used with a different request');
+  }
+  return { order: toSafeOrder(existing), replayed: true };
+}
+
+// True when `err` is the unique violation on (user_id, idempotency_key): i.e.
+// a concurrent request with the same key committed first.
+function isIdempotencyKeyConflict(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError &&
+    err.code === 'P2002' &&
+    JSON.stringify(err.meta?.target ?? '').includes('idempotency_key')
+  );
+}
+
 // Transactional: Order + all OrderDocument rows + the initial
 // OrderStatusHistory row are created atomically. Any failure (bad
 // reference, DB error, unique-constraint clash on orderCode) rolls back
 // everything - no partial order is ever left behind.
+//
+// Idempotency: with an idempotencyKey, the key and a hash of the request are
+// stored on the order row in the same transaction. A retry with the same key
+// and request returns that order instead of creating a second one - including
+// when the retry arrives while the first request is still in flight: the
+// unique index on (user_id, idempotency_key) lets exactly one insert win, and
+// the loser re-reads the winner's order. Without a key every call creates a
+// new order, as before.
 export async function createOrder(
   userId: string,
   input: CreateOrderInput,
   role: UserRole,
-): Promise<SafeOrder> {
+  idempotencyKey: string | null = null,
+): Promise<CreateOrderResult> {
   pricingService.assertValidShopId(input.shopId);
   pricingService.assertValidItemsArray(input.items);
+
+  // Looked up before any shop/pricing work: a replay returns the order as it
+  // was created even if the shop has since stopped accepting orders or prices
+  // have changed. The order is returned in its CURRENT state (it may have been
+  // paid or cancelled since), not as a frozen copy of the first response.
+  const requestHash = idempotencyKey
+    ? hashCreateOrderRequest(input.shopId, input.items as unknown[])
+    : null;
+  if (idempotencyKey && requestHash) {
+    const existing = await findOrderByIdempotencyKey(userId, idempotencyKey);
+    if (existing) {
+      return replayExistingOrder(existing, requestHash);
+    }
+  }
 
   const shop = await shopService.assertShopAcceptsOrders(input.shopId);
   shopService.assertShopEligibleForRole(shop, role);
@@ -189,81 +247,97 @@ export async function createOrder(
   const orderId = randomUUID();
   const orderCode = generateOrderCode();
 
-  const created = await prisma.$transaction(async (tx) => {
-    // Lock order: shop -> order -> queue (see orderLocks.ts). Only a free
-    // order enqueues here, so only it needs the shop lock.
-    if (isFreeFacultyOrder) {
-      await lockShop(tx, shop.shopId);
-    }
+  let created: OrderWithRelations;
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      // Lock order: shop -> order -> queue (see orderLocks.ts). Only a free
+      // order enqueues here, so only it needs the shop lock.
+      if (isFreeFacultyOrder) {
+        await lockShop(tx, shop.shopId);
+      }
 
-    // The documents were validated before this transaction opened; a
-    // concurrent deleteDocument could have removed one since. Share-locking
-    // them (in a fixed order) makes the existence/ownership check binding:
-    // deleteDocument takes the same rows FOR UPDATE, so from here until
-    // commit no referenced document can be deleted, and one that is already
-    // gone is reported as 404 instead of surfacing as a foreign-key failure.
-    const documentIds = [...new Set(finalItems.map((item) => item.documentId))].sort();
-    const lockedDocuments = await tx.$queryRaw<{ document_id: string; user_id: string }[]>`
-      SELECT document_id, user_id FROM documents
-      WHERE document_id IN (${Prisma.join(documentIds)})
-      ORDER BY document_id
-      FOR SHARE`;
-    if (
-      lockedDocuments.length !== documentIds.length ||
-      lockedDocuments.some((row) => row.user_id !== userId)
-    ) {
-      throw new NotFoundError('Document not found');
-    }
+      // The documents were validated before this transaction opened; a
+      // concurrent deleteDocument could have removed one since. Share-locking
+      // them (in a fixed order) makes the existence/ownership check binding:
+      // deleteDocument takes the same rows FOR UPDATE, so from here until
+      // commit no referenced document can be deleted, and one that is already
+      // gone is reported as 404 instead of surfacing as a foreign-key failure.
+      const documentIds = [...new Set(finalItems.map((item) => item.documentId))].sort();
+      const lockedDocuments = await tx.$queryRaw<{ document_id: string; user_id: string }[]>`
+        SELECT document_id, user_id FROM documents
+        WHERE document_id IN (${Prisma.join(documentIds)})
+        ORDER BY document_id
+        FOR SHARE`;
+      if (
+        lockedDocuments.length !== documentIds.length ||
+        lockedDocuments.some((row) => row.user_id !== userId)
+      ) {
+        throw new NotFoundError('Document not found');
+      }
 
-    await tx.order.create({
-      data: {
-        orderId,
-        orderCode,
-        userId,
-        shopId: shop.shopId,
-        orderStatus: 'PLACED',
-        totalAmount,
-      },
+      await tx.order.create({
+        data: {
+          orderId,
+          orderCode,
+          userId,
+          shopId: shop.shopId,
+          orderStatus: 'PLACED',
+          totalAmount,
+          idempotencyKey,
+          idempotencyRequestHash: requestHash,
+        },
+      });
+
+      await tx.orderDocument.createMany({
+        data: finalItems.map((item) => ({
+          orderId,
+          documentId: item.documentId,
+          pricingRuleId: item.pricingRuleId,
+          finishingRuleId: item.finishingRuleId,
+          copies: item.copies,
+          printPageCount: item.printPageCount,
+          pageRange: item.pageRange,
+          specialInstructions: item.specialInstructions,
+          pricePerPage: item.pricePerPage,
+          finishingPrice: item.finishingPrice,
+          lineTotal: item.lineTotal,
+        })),
+      });
+
+      await tx.orderStatusHistory.create({
+        data: {
+          orderId,
+          status: 'PLACED',
+          changedByUserId: userId,
+          notes: 'Order placed by student',
+        },
+      });
+
+      // No payment is ever created for a free faculty order - it enters the
+      // shop's FIFO queue immediately, atomically with order creation, the
+      // same way a paid order enters it atomically with payment confirmation
+      // (see payment.service.ts::confirmPayment). This is still the single
+      // CSE_FACULTY queue - no separate faculty queue is created.
+      if (isFreeFacultyOrder) {
+        await queueService.enqueueOrderWithinTransaction(tx, shop.shopId, orderId, userId, 'PLACED');
+      }
+
+      return tx.order.findUniqueOrThrow({ where: { orderId }, include: ORDER_INCLUDE });
     });
-
-    await tx.orderDocument.createMany({
-      data: finalItems.map((item) => ({
-        orderId,
-        documentId: item.documentId,
-        pricingRuleId: item.pricingRuleId,
-        finishingRuleId: item.finishingRuleId,
-        copies: item.copies,
-        printPageCount: item.printPageCount,
-        pageRange: item.pageRange,
-        specialInstructions: item.specialInstructions,
-        pricePerPage: item.pricePerPage,
-        finishingPrice: item.finishingPrice,
-        lineTotal: item.lineTotal,
-      })),
-    });
-
-    await tx.orderStatusHistory.create({
-      data: {
-        orderId,
-        status: 'PLACED',
-        changedByUserId: userId,
-        notes: 'Order placed by student',
-      },
-    });
-
-    // No payment is ever created for a free faculty order - it enters the
-    // shop's FIFO queue immediately, atomically with order creation, the
-    // same way a paid order enters it atomically with payment confirmation
-    // (see payment.service.ts::confirmPayment). This is still the single
-    // CSE_FACULTY queue - no separate faculty queue is created.
-    if (isFreeFacultyOrder) {
-      await queueService.enqueueOrderWithinTransaction(tx, shop.shopId, orderId, userId, 'PLACED');
+  } catch (err) {
+    // A concurrent request with the same key committed first: its order is
+    // THE order for this key. (The transaction above has rolled back.)
+    if (idempotencyKey && requestHash && isIdempotencyKeyConflict(err)) {
+      const existing = await findOrderByIdempotencyKey(userId, idempotencyKey);
+      if (existing) {
+        return replayExistingOrder(existing, requestHash);
+      }
+      throw new ConflictError('A request with this Idempotency-Key is already being processed');
     }
+    throw err;
+  }
 
-    return tx.order.findUniqueOrThrow({ where: { orderId }, include: ORDER_INCLUDE });
-  });
-
-  return toSafeOrder(created);
+  return { order: toSafeOrder(created), replayed: false };
 }
 
 export async function listOrdersForUser(userId: string): Promise<SafeOrder[]> {

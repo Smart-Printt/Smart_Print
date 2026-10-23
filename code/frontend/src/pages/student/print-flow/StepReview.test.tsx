@@ -56,7 +56,7 @@ const preview: PricingPreviewResult = {
 
 describe('StepReview - multi-document order review', () => {
   it('displays every document in the order with its own line total', () => {
-    render(<StepReview shop={SHOP} items={items} preview={preview} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
+    render(<StepReview shop={SHOP} items={items} preview={preview} getIdempotencyKey={() => 'test-key-12345678'} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
 
     expect(screen.getByText(/Assignment\.pdf/)).toBeInTheDocument()
     expect(screen.getByText(/Notes\.pdf/)).toBeInTheDocument()
@@ -67,13 +67,13 @@ describe('StepReview - multi-document order review', () => {
   })
 
   it('shows the backend-provided combined total, not a client-recomputed sum', () => {
-    render(<StepReview shop={SHOP} items={items} preview={preview} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
+    render(<StepReview shop={SHOP} items={items} preview={preview} getIdempotencyKey={() => 'test-key-12345678'} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
     // 20 + 12 + 35 = 67, exactly the server's totalAmount - displayed once, for the whole order.
     expect(screen.getByText('₹67.00')).toBeInTheDocument()
   })
 
   it('shows "Place Order" (not free) when the combined total is nonzero', () => {
-    render(<StepReview shop={SHOP} items={items} preview={preview} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
+    render(<StepReview shop={SHOP} items={items} preview={preview} getIdempotencyKey={() => 'test-key-12345678'} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Place Order' })).toBeInTheDocument()
   })
 
@@ -83,7 +83,7 @@ describe('StepReview - multi-document order review', () => {
       items: preview.items.map((i) => ({ ...i, pricePerPage: '0', printCost: '0', finishingCost: '0', lineTotal: '0' })),
       totalAmount: '0',
     }
-    render(<StepReview shop={SHOP} items={items} preview={freePreview} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
+    render(<StepReview shop={SHOP} items={items} preview={freePreview} getIdempotencyKey={() => 'test-key-12345678'} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Place Free Order' })).toBeInTheDocument()
     expect(screen.getByText('Free')).toBeInTheDocument()
   })

@@ -218,6 +218,13 @@ model Order {
   updatedAt       DateTime    @updatedAt @map("updated_at")
   cancelledAt     DateTime?   @map("cancelled_at")
   cancelledReason String?     @map("cancelled_reason")
+  // Order-creation idempotency (see order.service.ts::createOrder). Both are
+  // NULL for orders created without an Idempotency-Key header. The key is
+  // scoped to the user: the same key from two users is two unrelated keys.
+  // requestHash is a SHA-256 of the canonicalised request body, used to
+  // reject a key that is reused for a different request.
+  idempotencyKey         String? @map("idempotency_key")
+  idempotencyRequestHash String? @map("idempotency_request_hash")
 
   user           User                 @relation(fields: [userId], references: [userId])
   shop           PrintShop            @relation(fields: [shopId], references: [shopId])
@@ -230,6 +237,15 @@ model Order {
   @@index([shopId])
   @@index([orderStatus])
   @@index([createdAt])
+  // Referenced by queue's composite foreign key (order_id, shop_id) so the
+  // database - not just application code - guarantees a queue entry's shop
+  // is its order's shop. order_id alone is already unique (the primary
+  // key); PostgreSQL still needs a unique index on exactly these columns
+  // to accept the composite foreign key.
+  @@unique([orderId, shopId])
+  // One order per (user, Idempotency-Key). PostgreSQL treats NULLs as
+  // distinct, so any number of orders may have no key.
+  @@unique([userId, idempotencyKey])
   @@map("orders")
 }
 
@@ -317,9 +333,26 @@ model ShopFinishingRule {
 // entries were serialized. entered_at is an application-clock timestamp
 // (millisecond resolution; it can tie or step backwards) kept for display and
 // audit - it does not decide order. No priority score / weighting fields exist.
+//
+// Database-enforced invariants (migration 20261022000000_queue_integrity):
+//   - shop_id always equals the shop of the entry's order: shop_id is
+//     denormalised from orders.shop_id and tied to it by the composite
+//     foreign key (order_id, shop_id) -> orders(order_id, shop_id).
+//   - (shop_id, queue_number) is unique, so a shop can never hand out the
+//     same queue number twice.
+//   - order_id is unique, so an order has at most one queue entry.
+//   - AT MOST ONE PRINTING ENTRY PER SHOP is a partial unique index
+//     (queue_one_printing_per_shop: UNIQUE (shop_id) WHERE queue_status =
+//     'PRINTING'). Prisma has no syntax for partial indexes, so it exists
+//     only in the migration SQL; see backend/README.md ("Database
+//     constraints Prisma cannot express").
+//   - CHECK constraints (also migration-only) tie queue_status to the
+//     started_at / completed_at / cancelled_at timestamps and require
+//     queue_number >= 1.
 model Queue {
   queueId     String      @id @default(uuid()) @map("queue_id")
   orderId     String      @unique @map("order_id")
+  shopId      String      @map("shop_id")
   queueNumber Int         @map("queue_number")
   queueStatus QueueStatus @default(WAITING) @map("queue_status")
   enteredAt   DateTime    @default(now()) @map("entered_at")
@@ -327,8 +360,14 @@ model Queue {
   completedAt DateTime?   @map("completed_at")
   cancelledAt DateTime?   @map("cancelled_at")
 
-  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+  // onUpdate: Restrict - an order's shop never changes; if it ever did, the
+  // queue entry (and its per-shop queue number) must not silently follow it.
+  order Order @relation(fields: [orderId, shopId], references: [orderId, shopId], onDelete: Cascade, onUpdate: Restrict)
 
+  @@unique([shopId, queueNumber])
+  // Prisma requires the exact relation columns to be unique for a one-to-one
+  // relation (order_id alone is already unique above).
+  @@unique([orderId, shopId])
   @@index([enteredAt])
   @@index([queueStatus])
   // Supports listing WAITING entries by arrival time (display/audit); FIFO order itself is by queue_number.

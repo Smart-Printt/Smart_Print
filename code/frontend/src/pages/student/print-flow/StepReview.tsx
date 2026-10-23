@@ -22,6 +22,11 @@ interface StepReviewProps {
   shop: SafeShop
   items: OrderItemDraft[]
   preview: PricingPreviewResult
+  // Returns the Idempotency-Key for an order request, keyed by the request's
+  // content: the same content always gets the same key (so retrying, or coming
+  // back from the payment step and placing the order again, cannot create a
+  // duplicate), and changed content gets a new one.
+  getIdempotencyKey: (requestSignature: string) => string
   onBack: () => void
   onOrderCreated: (order: SafeOrder) => void
 }
@@ -36,7 +41,7 @@ function orderErrorMessage(error: unknown): string {
   return 'Could not place your order. Please try again.'
 }
 
-export function StepReview({ shop, items, preview, onBack, onOrderCreated }: StepReviewProps) {
+export function StepReview({ shop, items, preview, getIdempotencyKey, onBack, onOrderCreated }: StepReviewProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isFree = isZero(preview.totalAmount)
@@ -45,7 +50,7 @@ export function StepReview({ shop, items, preview, onBack, onOrderCreated }: Ste
     setIsSubmitting(true)
     setError(null)
     try {
-      const order = await orderApi.create({
+      const input = {
         shopId: shop.shopId,
         items: items.map((item) => ({
           documentId: item.document.documentId,
@@ -57,7 +62,8 @@ export function StepReview({ shop, items, preview, onBack, onOrderCreated }: Ste
           finishingRuleId: item.settings.finishingRuleId ?? undefined,
           specialInstructions: item.settings.specialInstructions.trim() || undefined,
         })),
-      })
+      }
+      const order = await orderApi.create(input, getIdempotencyKey(JSON.stringify(input)))
 
       const last = items[items.length - 1]
       if (last) {

@@ -306,6 +306,8 @@ React PrintFlowPage → POST /api/orders  { shopId, items:[{documentId, copies, 
          - pricingService.resolvePricingRule() — finds the shop's CURRENT price for (printType,paperSize,sides)
          - resolveFinishingRule() — optional binding/stapling price
          - computes printCost, finishingCost, lineTotal (all Prisma.Decimal, not float)
+     - if the request has an Idempotency-Key header and an order with that (user, key) exists → return it (replay);
+       same key + different request → 409. (See "Order idempotency" in code/backend/README.md.)
      - if FACULTY at CSE_FACULTY shop → isFreeFacultyShop() → zero out all prices
      - prisma.$transaction([ order.create, orderDocument.createMany, orderStatusHistory.create,
                               (+ enqueueOrderWithinTransaction if free faculty order) ])
@@ -348,11 +350,11 @@ React → POST /api/orders/:orderId/payment/confirm  {}
 | **User** | All accounts (4 roles) | `userId`(PK), `email`(unique), `passwordHash`, `role`, `status`, `shopId`(FK, nullable) | 1 User → many Document, Order, OrderStatusHistory, PasswordResetToken. Many User (staff) → 1 PrintShop |
 | **Document** | Uploaded files | `documentId`(PK), `userId`(FK), `storageKey`(unique), `fileHash`, `pageCount` | 1 Document → many OrderDocument |
 | **PrintShop** | A physical print shop | `shopId`(PK), `shopCode`(unique, e.g. `CSE_FACULTY`), `isActive`, `acceptingOrders` | 1 Shop → many Order, ShopPricingRule, ShopFinishingRule, staff Users |
-| **Order** | One print order | `orderId`(PK), `orderCode`(unique, human-readable), `userId`(FK), `shopId`(FK), `orderStatus`, `totalAmount` | 1 Order → many OrderDocument; 1 Order → 0..1 Queue (one-to-one); 1 Order → many Payment; 1 Order → many OrderStatusHistory |
+| **Order** | One print order | `orderId`(PK), `orderCode`(unique, human-readable), `userId`(FK), `shopId`(FK), `orderStatus`, `totalAmount`, `idempotencyKey`/`idempotencyRequestHash` (optional; unique per user) | 1 Order → many OrderDocument; 1 Order → 0..1 Queue (one-to-one); 1 Order → many Payment; 1 Order → many OrderStatusHistory |
 | **OrderDocument** | Line item (one doc within an order) | `orderDocumentId`(PK), `orderId`(FK), `documentId`(FK), `pricingRuleId`(FK), snapshot prices (`pricePerPage`, `finishingPrice`, `lineTotal`) | Many-to-one to Order, Document, ShopPricingRule, ShopFinishingRule |
 | **ShopPricingRule** | Price per (printType,paperSize,sides) per shop, with effective dates | `pricingRuleId`(PK), `shopId`(FK), `pricePerPage`, `effectiveFrom/To` | 1 Shop → many rules; 1 rule → many OrderDocument (snapshotted, never edited retroactively) |
 | **ShopFinishingRule** | Price for binding/lamination/etc per shop | similar to above | same pattern |
-| **Queue** | FIFO queue entry, 1-to-1 with an Order | `queueId`(PK), `orderId`(FK, **unique** — enforces one-to-one), `queueNumber`, `queueStatus`, `enteredAt` | 1-to-1 with Order |
+| **Queue** | FIFO queue entry, 1-to-1 with an Order | `queueId`(PK), `orderId`(FK, **unique** — enforces one-to-one), `shopId` (must equal the order's shop — composite FK), `queueNumber` (unique per shop), `queueStatus`, `enteredAt`. A partial unique index allows only one `PRINTING` entry per shop | 1-to-1 with Order |
 | **Payment** | A payment attempt on an order | `paymentId`(PK), `orderId`(FK), `amount`, `paymentStatus`, `transactionId`(unique) | Many Payment → 1 Order (an order can have multiple attempts, e.g. a failed one then a retry); 1 Payment → many Refund |
 | **Refund** | A refund against a successful payment | `refundId`(PK), `paymentId`(FK), `refundAmount`, `refundStatus` | Many-to-one to Payment |
 | **OrderStatusHistory** | Audit trail of every status change | `historyId`(PK), `orderId`(FK), `status`, `changedByUserId`(FK, nullable), `changedAt` | Many-to-one to Order and User |
@@ -368,6 +370,8 @@ React → POST /api/orders/:orderId/payment/confirm  {}
 `User —(places)→ Order —(has line items)→ OrderDocument —(references)→ Document`
 `Order —(has)→ Queue` (1:1) `, Order —(has)→ Payment —(can have)→ Refund`
 `PrintShop —(owns)→ ShopPricingRule / ShopFinishingRule —(priced into)→ OrderDocument`
+
+**Constraints Prisma cannot express:** partial unique indexes (e.g. one `PRINTING` queue entry per shop, one `SUCCESS` payment per order) and `CHECK` constraints live only in the migration SQL. They are listed, with how to apply them to existing data, in `code/backend/README.md` ("Database constraints Prisma cannot express").
 
 **Prisma model → Postgres table:** every model maps via `@@map("...")`, e.g. `model User { ... @@map("users") }` → actual Postgres table is `users` (snake_case), while Prisma code uses `prisma.user` (camelCase model name). Field names similarly map via `@map("...")`, e.g. `userId String @map("user_id")`.
 
