@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/StateBlock'
 import { TextArea } from '@/components/ui/Input'
 import { PageHeader } from '@/layouts/AppShell'
+import { StepPayment } from '@/pages/student/print-flow/StepPayment'
 import { orderApi } from '@/services/orderApi'
 import { queueApi } from '@/services/queueApi'
 import { refundApi } from '@/services/refundApi'
@@ -49,6 +50,7 @@ export function OrderDetailsPage() {
   const [cancelReason, setCancelReason] = useState('')
   const [isCancelling, setIsCancelling] = useState(false)
   const [isRequestingRefund, setIsRequestingRefund] = useState(false)
+  const [isPaying, setIsPaying] = useState(false)
 
   const load = useCallback(async () => {
     if (!orderId) return
@@ -102,6 +104,16 @@ export function OrderDetailsPage() {
     }
   }
 
+  // Resumes the existing mock-payment flow for THIS order (no new order, so
+  // no idempotency key is involved): StepPayment initiates (or picks up the
+  // already pending payment) and confirms, then we re-read the order.
+  function handlePaid(paid: SafeOrder) {
+    setOrder(paid)
+    setIsPaying(false)
+    showToast('Payment confirmed.', 'success')
+    void load()
+  }
+
   async function handleRequestRefund() {
     if (!orderId) return
     setIsRequestingRefund(true)
@@ -137,6 +149,9 @@ export function OrderDetailsPage() {
   const isFree = isZero(order.totalAmount)
   const canCancel = CANCELLABLE_ORDER_STATUSES.includes(order.orderStatus)
   const canRequestRefund = order.orderStatus === 'CANCELLED' && !isFree && payment?.paymentStatus === 'SUCCESS' && !refund
+  // Only an unpaid (PLACED), non-free order can be paid; a PAYMENT_CONFIRMED /
+  // QUEUED / ... order is already paid and a CANCELLED one is no longer payable.
+  const canPay = order.orderStatus === 'PLACED' && !isFree
   const canReprint = order.orderStatus === 'COLLECTED' || order.orderStatus === 'CANCELLED'
 
   const upcoming =
@@ -265,6 +280,11 @@ export function OrderDetailsPage() {
             Cancel Order
           </Button>
         )}
+        {canPay && (
+          <Button onClick={() => setIsPaying(true)}>
+            {payment?.paymentStatus === 'FAILED' ? 'Retry payment' : 'Pay now'}
+          </Button>
+        )}
         {canRequestRefund && (
           <Button variant="secondary" onClick={handleRequestRefund} isLoading={isRequestingRefund}>
             Request Refund
@@ -283,6 +303,10 @@ export function OrderDetailsPage() {
           <Button variant="ghost">Back to Orders</Button>
         </Link>
       </div>
+
+      <Modal isOpen={isPaying && canPay} title="Complete payment" onClose={() => setIsPaying(false)} maxWidth={520}>
+        <StepPayment order={order} onPaid={handlePaid} onBack={() => setIsPaying(false)} />
+      </Modal>
 
       <Modal isOpen={isCancelOpen} title="Cancel this order?" onClose={() => setIsCancelOpen(false)}>
         <p className="modal__body">This can't be undone once printing has started.</p>

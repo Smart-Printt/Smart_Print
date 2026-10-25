@@ -14,6 +14,7 @@ import { queueApi } from '@/services/queueApi'
 import { refundApi } from '@/services/refundApi'
 import { paymentApi } from '@/services/paymentApi'
 import { shopQueueApi } from '@/services/shopQueueApi'
+import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/hooks/useToast'
 import type { OrderStatus, SafeOrder, SafePayment, SafeQueueEntry, SafeRefund } from '@/types'
 import { ApiError } from '@/types/api'
@@ -38,12 +39,13 @@ const STEP_LABEL: Record<OrderStatus, string> = {
 // - a staff member who manually navigates here with another shop's orderId
 // gets the backend's 403/404, rendered below via ErrorState. Staff may view
 // documents and (only when it genuinely applies to this exact order) drive
-// the shop's FIFO queue forward - but never cancel/refund/collect on the
-// customer's behalf, and refunds stay view-only. Those actions are
-// intentionally absent from this page.
+// the shop's FIFO queue forward, and hand over a READY order at the counter
+// ("Mark as Collected") - but never cancel/refund on the customer's behalf,
+// and refunds stay view-only. Those actions are intentionally absent here.
 export function StaffOrderDetailsPage() {
   const { orderId } = useParams<{ orderId: string }>()
   const { showToast } = useToast()
+  const { user } = useAuth()
 
   const [order, setOrder] = useState<SafeOrder | null>(null)
   const [queue, setQueue] = useState<SafeQueueEntry | null>(null)
@@ -51,6 +53,7 @@ export function StaffOrderDetailsPage() {
   const [refund, setRefund] = useState<SafeRefund | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [isActing, setIsActing] = useState(false)
+  const [isCollecting, setIsCollecting] = useState(false)
 
   const load = useCallback(async () => {
     if (!orderId) return
@@ -111,6 +114,24 @@ export function StaffOrderDetailsPage() {
     }
   }
 
+  // Hand-over at the counter. The server owns the rules (only READY, only this
+  // shop's staff); this just calls it and re-reads the order, so a duplicate
+  // click or a colleague collecting first shows the real, current state
+  // instead of leaving the screen stale.
+  async function handleCollect() {
+    if (!order || isCollecting) return
+    setIsCollecting(true)
+    try {
+      await queueApi.collect(order.orderId)
+      showToast('Order marked as collected.', 'success')
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not mark this order as collected.', 'error')
+    } finally {
+      setIsCollecting(false)
+    }
+    await load()
+  }
+
   if (error) {
     return (
       <div>
@@ -130,6 +151,7 @@ export function StaffOrderDetailsPage() {
   }
 
   const isFree = isZero(order.totalAmount)
+  const canCollect = order.orderStatus === 'READY' && user?.role === 'SHOP_STAFF'
   const upcoming =
     order.orderStatus === 'CANCELLED'
       ? []
@@ -220,6 +242,18 @@ export function StaffOrderDetailsPage() {
             </p>
             <Button onClick={() => void handleCompletePrint()} isLoading={isActing}>
               Complete Print
+            </Button>
+          </Card>
+        )}
+
+        {canCollect && (
+          <Card padded>
+            <p style={{ fontWeight: 800, marginBottom: 10 }}>Collection</p>
+            <p className="text-secondary" style={{ fontSize: 13, marginBottom: 12 }}>
+              This order is ready. Mark it as collected once the customer has picked it up.
+            </p>
+            <Button onClick={() => void handleCollect()} isLoading={isCollecting}>
+              Mark as Collected
             </Button>
           </Card>
         )}

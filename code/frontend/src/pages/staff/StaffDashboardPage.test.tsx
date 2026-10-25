@@ -430,3 +430,118 @@ describe('StaffDashboardPage - Current Printing shows real, downloadable documen
     expect(screen.getAllByText('x.pdf').length).toBeGreaterThan(0)
   })
 })
+
+describe('StaffDashboardPage - "Next up" card document actions', () => {
+  const waitingEntry = queueEntry({ queueId: 'q-wait', orderId: 'order-2', orderCode: 'SP-2000', queueStatus: 'WAITING', queueNumber: 2, position: 1 })
+
+  function setUpNextUp(nextOrder: SafeOrder | null) {
+    mockShopGetOne.mockResolvedValue(shop({ shopId: waitingEntry.shopId, shopCode: 'G_BLOCK', shopName: 'G Block Print Shop' }))
+    mockQueueCurrent.mockResolvedValue(null)
+    mockQueueList.mockResolvedValue([waitingEntry])
+    mockOrderGetOne.mockImplementation((orderId: string) =>
+      nextOrder && orderId === nextOrder.orderId ? Promise.resolve(nextOrder) : new Promise(() => undefined),
+    )
+    mockPaymentGetForOrder.mockResolvedValue(null)
+    mockUseAuth.mockReturnValue({
+      user: { userId: 'u1', name: 'G Staff', email: 'g@t.com', phone: null, role: 'SHOP_STAFF', status: 'ACTIVE', shopId: waitingEntry.shopId },
+    })
+  }
+
+  it('shows View and Download for the document of the next-up order (before printing starts)', async () => {
+    setUpNextUp(order([orderItem({ documentId: 'doc-n', fileName: 'next.pdf' })], { orderId: 'order-2', orderCode: 'SP-2000', orderStatus: 'QUEUED' }))
+    renderDashboard()
+
+    await screen.findByText('Next up')
+    expect((await screen.findAllByText('next.pdf')).length).toBeGreaterThanOrEqual(1) // card title + document row
+    expect(screen.getByRole('button', { name: /^view$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^download$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /start printing/i })).toBeInTheDocument() // existing actions kept
+    expect(screen.getByText('Documents (1)')).toBeInTheDocument()
+  })
+
+  it('Download calls documentApi.download with the real documentId and file name', async () => {
+    setUpNextUp(order([orderItem({ documentId: 'doc-n', orderDocumentId: 'od-n', fileName: 'next.pdf' })], { orderId: 'order-2', orderStatus: 'QUEUED' }))
+    mockDownload.mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    renderDashboard()
+
+    await user.click(await screen.findByRole('button', { name: /^download$/i }))
+
+    await waitFor(() => expect(mockDownload).toHaveBeenCalledWith('doc-n', 'next.pdf'))
+    expect(mockDownload).not.toHaveBeenCalledWith('od-n', expect.anything())
+  })
+
+  it('View opens the PDF preview through the authenticated view call', async () => {
+    setUpNextUp(order([orderItem({ documentId: 'doc-n', fileName: 'next.pdf' })], { orderId: 'order-2', orderStatus: 'QUEUED' }))
+    mockView.mockResolvedValue(new Blob(['%PDF-1.4 fake'], { type: 'application/pdf' }))
+    const user = userEvent.setup()
+    renderDashboard()
+
+    await user.click(await screen.findByRole('button', { name: /^view$/i }))
+
+    await waitFor(() => expect(mockView).toHaveBeenCalledWith('doc-n'))
+    await waitFor(() => expect(document.querySelector('object[type="application/pdf"]')).toBeTruthy())
+  })
+
+  it('shows a view error inside the preview (e.g. missing file) without breaking the card', async () => {
+    setUpNextUp(order([orderItem({ documentId: 'doc-n', fileName: 'next.pdf' })], { orderId: 'order-2', orderStatus: 'QUEUED' }))
+    mockView.mockRejectedValue(new Error('404'))
+    const user = userEvent.setup()
+    renderDashboard()
+
+    await user.click(await screen.findByRole('button', { name: /^view$/i }))
+
+    expect(await screen.findByText('Unable to preview this document.')).toBeInTheDocument()
+    expect(screen.getByText('Next up')).toBeInTheDocument()
+  })
+
+  it('renders one View/Download pair per document for a multi-document order, bound to each documentId', async () => {
+    setUpNextUp(
+      order(
+        [orderItem({ documentId: 'doc-a', fileName: 'a.pdf' }), orderItem({ documentId: 'doc-b', fileName: 'b.pdf' })],
+        { orderId: 'order-2', orderStatus: 'QUEUED' },
+      ),
+    )
+    mockDownload.mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    renderDashboard()
+
+    await screen.findByText('a.pdf')
+    expect(screen.getAllByRole('button', { name: /^view$/i })).toHaveLength(2)
+    const downloads = screen.getAllByRole('button', { name: /^download$/i })
+    expect(downloads).toHaveLength(2)
+    await user.click(downloads[1]!)
+    await waitFor(() => expect(mockDownload).toHaveBeenCalledWith('doc-b', 'b.pdf'))
+  })
+
+  it('shows a loading placeholder, and no document controls, until the next-up order has loaded', async () => {
+    setUpNextUp(null) // getOne never resolves
+    renderDashboard()
+
+    await screen.findByText('Next up')
+    expect(screen.getByText('Documents')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^view$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^download$/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /start printing/i })).toBeInTheDocument()
+  })
+
+  it('does not show a second document list while an order is currently printing (the Next-up card is replaced)', async () => {
+    const printing = queueEntry({ queueId: 'q-print', orderId: 'order-1', queueStatus: 'PRINTING', queueNumber: 1 })
+    mockShopGetOne.mockResolvedValue(shop({ shopId: printing.shopId, shopCode: 'G_BLOCK', shopName: 'G Block Print Shop' }))
+    mockQueueCurrent.mockResolvedValue(printing)
+    mockQueueList.mockResolvedValue([waitingEntry])
+    mockOrderGetOne.mockImplementation((orderId: string) =>
+      Promise.resolve(order([orderItem({ documentId: `d-${orderId}`, fileName: `${orderId}.pdf` })], { orderId, orderStatus: orderId === 'order-1' ? 'PRINTING' : 'QUEUED' })),
+    )
+    mockPaymentGetForOrder.mockResolvedValue(null)
+    mockUseAuth.mockReturnValue({
+      user: { userId: 'u1', name: 'G Staff', email: 'g@t.com', phone: null, role: 'SHOP_STAFF', status: 'ACTIVE', shopId: printing.shopId },
+    })
+    renderDashboard()
+
+    await screen.findByText('Currently printing')
+    await screen.findAllByText('order-1.pdf')
+    expect(screen.queryByText('Next up')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^view$/i })).toHaveLength(1)
+  })
+})

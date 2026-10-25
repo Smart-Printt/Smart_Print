@@ -31,11 +31,6 @@ function orderTitle(order: SafeOrder | null): string {
   return `${order.items.length} documents`
 }
 
-function orderDocumentNames(order: SafeOrder | null): string[] {
-  if (!order || order.items.length <= 1) return []
-  return order.items.map((item) => item.fileName)
-}
-
 function orderSummary(order: SafeOrder | null): string {
   if (!order || order.items.length === 0) return ''
   if (order.items.length === 1) {
@@ -312,14 +307,24 @@ export function StaffDashboardPage() {
             </div>
             <OrderPaymentBadge order={waitingOrders[nextEntry.orderId] ?? null} payment={waitingPayments[nextEntry.orderId]} />
           </div>
-          {orderDocumentNames(waitingOrders[nextEntry.orderId] ?? null).length > 0 && (
-            <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
-              {orderDocumentNames(waitingOrders[nextEntry.orderId] ?? null).map((name) => (
-                <li key={name}>{name}</li>
-              ))}
-            </ul>
-          )}
           <p className="text-secondary" style={{ fontSize: 13, marginTop: 4 }}>{orderSummary(waitingOrders[nextEntry.orderId] ?? null)}</p>
+
+          {/* Same View/Download actions (and the same server-enforced shop
+              authorization) as the "Currently printing" card, so staff can open
+              the file before pressing Start Printing. The order comes from the
+              already-loaded waitingOrders, so this adds no extra requests. */}
+          <div style={{ marginTop: 14, background: 'var(--color-surface-sunken)', borderRadius: 12, padding: '4px 14px' }}>
+            <p className="text-muted" style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em', margin: '10px 0 0' }}>
+              Documents{waitingOrders[nextEntry.orderId] ? ` (${waitingOrders[nextEntry.orderId]!.items.length})` : ''}
+            </p>
+            {waitingOrders[nextEntry.orderId] ? (
+              <OrderDocumentList items={waitingOrders[nextEntry.orderId]!.items} showPrice={false} />
+            ) : (
+              <div style={{ padding: '10px 0' }}>
+                <Skeleton height={54} radius="10px" />
+              </div>
+            )}
+          </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
             <Button onClick={handleStartNext} isLoading={isActing}>
               Start Printing

@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-import type { SafeOrder, SafeOrderItem } from '@/types'
+import type { OrderStatus, SafeOrder, SafeOrderItem } from '@/types'
+import { ApiError } from '@/types/api'
 import { StaffOrderDetailsPage } from './StaffOrderDetailsPage'
 
 const mockGetOne = vi.fn()
@@ -12,9 +13,13 @@ vi.mock('@/services/orderApi', () => ({
 }))
 
 const mockQueueGetForOrder = vi.fn()
+const mockCollect = vi.fn()
 vi.mock('@/services/queueApi', () => ({
-  queueApi: { getForOrder: (id: string) => mockQueueGetForOrder(id) },
+  queueApi: { getForOrder: (id: string) => mockQueueGetForOrder(id), collect: (id: string) => mockCollect(id) },
 }))
+
+const mockUseAuth = vi.fn()
+vi.mock('@/hooks/useAuth', () => ({ useAuth: () => mockUseAuth() }))
 
 const mockPaymentGetForOrder = vi.fn()
 vi.mock('@/services/paymentApi', () => ({
@@ -64,7 +69,7 @@ function makeItem(overrides: Partial<SafeOrderItem>): SafeOrderItem {
   }
 }
 
-function makeOrder(items: SafeOrderItem[]): SafeOrder {
+function makeOrder(items: SafeOrderItem[], overrides: Partial<SafeOrder> = {}): SafeOrder {
   return {
     orderId: 'order-1',
     orderCode: 'SP-TEST-1',
@@ -82,6 +87,7 @@ function makeOrder(items: SafeOrderItem[]): SafeOrder {
     statusHistory: [
       { status: 'PLACED', changedByUserId: 'u1', changedAt: new Date().toISOString(), notes: null },
     ],
+    ...overrides,
   }
 }
 
@@ -100,6 +106,8 @@ beforeEach(() => {
   mockQueueGetForOrder.mockRejectedValue(new Error('no queue entry'))
   mockPaymentGetForOrder.mockRejectedValue(new Error('no payment'))
   mockRefundGetForOrder.mockRejectedValue(new Error('no refund'))
+  mockCollect.mockResolvedValue(undefined)
+  mockUseAuth.mockReturnValue({ user: { userId: 'staff-1', role: 'SHOP_STAFF', shopId: 'shop-1' } })
 })
 
 describe('StaffOrderDetailsPage document view/download', () => {
@@ -237,5 +245,116 @@ describe('StaffOrderDetailsPage document view/download', () => {
     await waitFor(() => expect(mockDownload).toHaveBeenCalledWith('doc-a', 'a.pdf'))
 
     expect(mockDownload).toHaveBeenCalledTimes(3)
+  })
+})
+
+const collectButton = () => screen.queryByRole('button', { name: /mark as collected/i })
+const oneItem = () => [makeItem({ documentId: 'doc-a', fileName: 'assignment.pdf' })]
+
+describe('StaffOrderDetailsPage - Collect action', () => {
+  it('shows "Mark as Collected" for a READY order viewed by shop staff', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'READY' }))
+    renderPage()
+    await screen.findByText('assignment.pdf')
+    expect(collectButton()).toBeInTheDocument()
+    expect(mockCollect).not.toHaveBeenCalled() // never collects on its own
+  })
+
+  it.each<OrderStatus>(['PLACED', 'PAYMENT_CONFIRMED', 'QUEUED', 'PRINTING', 'COLLECTED', 'CANCELLED'])(
+    'is hidden for a %s order (the server only allows READY -> COLLECTED)',
+    async (orderStatus) => {
+      mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus }))
+      renderPage()
+      await screen.findByText('assignment.pdf')
+      expect(collectButton()).not.toBeInTheDocument()
+    },
+  )
+
+  it.each(['ADMIN', 'STUDENT', 'FACULTY'])('is hidden when the signed-in role is %s', async (role) => {
+    mockUseAuth.mockReturnValue({ user: { userId: 'x', role, shopId: null } })
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'READY' }))
+    renderPage()
+    await screen.findByText('assignment.pdf')
+    expect(collectButton()).not.toBeInTheDocument()
+  })
+
+  it('collects the order, confirms with a toast, and re-reads it so the button disappears', async () => {
+    mockGetOne
+      .mockResolvedValueOnce(makeOrder(oneItem(), { orderStatus: 'READY' }))
+      .mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'COLLECTED' }))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('assignment.pdf')
+
+    await user.click(collectButton()!)
+
+    await waitFor(() => expect(mockCollect).toHaveBeenCalledWith('order-1'))
+    expect(mockCollect).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('Order marked as collected.', 'success'))
+    await waitFor(() => expect(collectButton()).not.toBeInTheDocument())
+    expect(mockGetOne).toHaveBeenCalledTimes(2) // initial load + refresh
+  })
+
+  it('shows the loading state and ignores a second click while the request is in flight', async () => {
+    let finish!: () => void
+    mockCollect.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+    )
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'READY' }))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('assignment.pdf')
+
+    await user.click(collectButton()!)
+    await waitFor(() => expect(collectButton()).toBeDisabled())
+    await user.click(collectButton()!)
+    expect(mockCollect).toHaveBeenCalledTimes(1)
+
+    finish()
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('Order marked as collected.', 'success'))
+  })
+
+  it('handles duplicate collection: shows the server message, re-reads the order, and the button goes away', async () => {
+    mockGetOne
+      .mockResolvedValueOnce(makeOrder(oneItem(), { orderStatus: 'READY' }))
+      .mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'COLLECTED' }))
+    mockCollect.mockRejectedValue(new ApiError(409, 'Order cannot be collected while it is COLLECTED'))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('assignment.pdf')
+
+    await user.click(collectButton()!)
+
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('Order cannot be collected while it is COLLECTED', 'error'))
+    await waitFor(() => expect(collectButton()).not.toBeInTheDocument())
+    expect(mockShowToast).not.toHaveBeenCalledWith(expect.anything(), 'success')
+  })
+
+  it('shows a generic error for an unexpected failure and lets staff retry (button re-enabled)', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'READY' }))
+    mockCollect.mockRejectedValueOnce(new Error('network down')).mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('assignment.pdf')
+
+    await user.click(collectButton()!)
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('Could not mark this order as collected.', 'error'))
+    await waitFor(() => expect(collectButton()).toBeEnabled())
+
+    await user.click(collectButton()!)
+    await waitFor(() => expect(mockCollect).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows the server permission error (e.g. another shop) without changing the page', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'READY' }))
+    mockCollect.mockRejectedValue(new ApiError(403, 'You are not authorized to manage this shop'))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('assignment.pdf')
+    await user.click(collectButton()!)
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('You are not authorized to manage this shop', 'error'))
+    expect(screen.getByText('assignment.pdf')).toBeInTheDocument()
   })
 })
