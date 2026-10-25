@@ -35,6 +35,9 @@ function orderErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 403) return error.message
     if (error.status === 400) return error.message
+    // 409: a selected document's file is no longer available (the message names it);
+    // 503: document storage is temporarily unavailable. Both are actionable as written.
+    if (error.status === 409 || error.status === 503) return error.message
     if (error.status === 404) return 'One of the selected documents could no longer be found.'
     if (error.status === 0) return 'Connection lost. Your order has not been placed.'
   }

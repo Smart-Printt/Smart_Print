@@ -8,6 +8,7 @@ import request from 'supertest';
 import { createApp } from '../src/app';
 import { env } from '../src/config/env';
 import { prisma } from '../src/config/prisma';
+import { removeFakeDocumentFiles, writeFakeDocumentFile } from './helpers/fakeDocumentFile';
 
 const app = createApp();
 
@@ -56,7 +57,7 @@ async function uploadDocument(
 // with how tests/auth.test.ts creates User rows directly for scenarios the
 // public API can't produce.
 async function createFakeDocument(userId: string, pageCount: number | null) {
-  return prisma.document.create({
+  const document = await prisma.document.create({
     data: {
       userId,
       fileName: 'fake-for-range-tests.pdf',
@@ -69,6 +70,8 @@ async function createFakeDocument(userId: string, pageCount: number | null) {
       pageCount,
     },
   });
+  await writeFakeDocumentFile(document.storageKey);
+  return document;
 }
 
 const now = new Date();
@@ -168,6 +171,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await removeFakeDocumentFiles();
   const shopIds = [shop.shopId, otherShop.shopId, inactiveShop.shopId, notAcceptingShop.shopId];
   await prisma.order.deleteMany({ where: { shopId: { in: shopIds } } });
   await prisma.user.deleteMany({ where: { email: { startsWith: TEST_EMAIL_PREFIX } } });
