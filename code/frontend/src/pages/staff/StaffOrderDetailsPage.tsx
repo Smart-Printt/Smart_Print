@@ -54,6 +54,8 @@ export function StaffOrderDetailsPage() {
   const [error, setError] = useState<unknown>(null)
   const [isActing, setIsActing] = useState(false)
   const [isCollecting, setIsCollecting] = useState(false)
+  const [refundLoadFailed, setRefundLoadFailed] = useState(false)
+  const [paymentLoadFailed, setPaymentLoadFailed] = useState(false)
 
   const load = useCallback(async () => {
     if (!orderId) return
@@ -68,9 +70,37 @@ export function StaffOrderDetailsPage() {
         setQueue(null)
       }
 
+      // null = no payment yet (not an error); a genuine failure is shown below.
       if (!isZero(fetched.totalAmount)) {
-        paymentApi.getForOrder(orderId).then(setPayment).catch(() => setPayment(null))
-        refundApi.getForOrder(orderId).then(setRefund).catch(() => setRefund(null))
+        paymentApi
+          .getForOrder(orderId)
+          .then((p) => {
+            setPayment(p)
+            setPaymentLoadFailed(false)
+          })
+          .catch(() => {
+            setPayment(null)
+            setPaymentLoadFailed(true)
+          })
+      }
+
+      // A refund can only exist for a cancelled, paid order, so only ask then
+      // (no pointless request that is guaranteed to 404). "No refund" comes
+      // back as null; a genuine failure is shown rather than hidden.
+      if (fetched.orderStatus === 'CANCELLED' && !isZero(fetched.totalAmount)) {
+        refundApi
+          .getForOrder(orderId)
+          .then((r) => {
+            setRefund(r)
+            setRefundLoadFailed(false)
+          })
+          .catch(() => {
+            setRefund(null)
+            setRefundLoadFailed(true)
+          })
+      } else {
+        setRefund(null)
+        setRefundLoadFailed(false)
       }
     } catch (err) {
       setError(err)
@@ -246,6 +276,14 @@ export function StaffOrderDetailsPage() {
           </Card>
         )}
 
+        {paymentLoadFailed && (
+          <Card padded>
+            <p className="text-secondary" style={{ fontSize: 13.5 }}>
+              Could not load the payment details for this order. Refresh to try again.
+            </p>
+          </Card>
+        )}
+
         {canCollect && (
           <Card padded>
             <p style={{ fontWeight: 800, marginBottom: 10 }}>Collection</p>
@@ -255,6 +293,14 @@ export function StaffOrderDetailsPage() {
             <Button onClick={() => void handleCollect()} isLoading={isCollecting}>
               Mark as Collected
             </Button>
+          </Card>
+        )}
+
+        {refundLoadFailed && (
+          <Card padded>
+            <p className="text-secondary" style={{ fontSize: 13.5 }}>
+              Could not load the refund details for this order. Refresh to try again.
+            </p>
           </Card>
         )}
 

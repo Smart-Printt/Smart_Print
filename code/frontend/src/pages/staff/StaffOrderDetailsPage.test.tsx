@@ -104,7 +104,7 @@ function renderPage(orderId = 'order-1') {
 beforeEach(() => {
   vi.clearAllMocks()
   mockQueueGetForOrder.mockRejectedValue(new Error('no queue entry'))
-  mockPaymentGetForOrder.mockRejectedValue(new Error('no payment'))
+  mockPaymentGetForOrder.mockResolvedValue(null) // no payment yet (what paymentApi returns for a 404)
   mockRefundGetForOrder.mockRejectedValue(new Error('no refund'))
   mockCollect.mockResolvedValue(undefined)
   mockUseAuth.mockReturnValue({ user: { userId: 'staff-1', role: 'SHOP_STAFF', shopId: 'shop-1' } })
@@ -356,5 +356,77 @@ describe('StaffOrderDetailsPage - Collect action', () => {
     await user.click(collectButton()!)
     await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith('You are not authorized to manage this shop', 'error'))
     expect(screen.getByText('assignment.pdf')).toBeInTheDocument()
+  })
+})
+
+describe('StaffOrderDetailsPage - optional refund lookup', () => {
+  it('does not request a refund for an order that cannot have one (READY / paid, not cancelled)', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'READY' }))
+    renderPage()
+    await screen.findByText('assignment.pdf')
+    expect(mockRefundGetForOrder).not.toHaveBeenCalled()
+  })
+
+  it('requests it for a cancelled paid order; "no refund" (null) shows nothing and no error', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'CANCELLED' }))
+    mockRefundGetForOrder.mockResolvedValue(null)
+    renderPage()
+    await screen.findByText('assignment.pdf')
+    await waitFor(() => expect(mockRefundGetForOrder).toHaveBeenCalledWith('order-1'))
+    expect(screen.queryByText(/could not load the refund details/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Refund')).not.toBeInTheDocument()
+  })
+
+  it('shows the refund when one exists', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'CANCELLED' }))
+    mockRefundGetForOrder.mockResolvedValue({
+      refundId: 'r1',
+      orderId: 'order-1',
+      paymentId: 'p1',
+      refundAmount: '25',
+      refundReason: 'Cancelled',
+      refundStatus: 'REQUESTED',
+      refundTransactionId: 'RFD-1',
+      requestedAt: new Date().toISOString(),
+      processedAt: null,
+    })
+    renderPage()
+    expect(await screen.findByText('Refund')).toBeInTheDocument()
+  })
+
+  it('does NOT hide a genuine server error: it tells the staff member the refund could not be loaded', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'CANCELLED' }))
+    mockRefundGetForOrder.mockRejectedValue(new ApiError(500, 'Internal server error'))
+    renderPage()
+    expect(await screen.findByText(/could not load the refund details/i)).toBeInTheDocument()
+  })
+})
+
+describe('StaffOrderDetailsPage - optional payment lookup', () => {
+  it('no payment yet (null): no payment card and no error notice', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'PLACED' }))
+    mockPaymentGetForOrder.mockResolvedValue(null)
+    renderPage()
+    await screen.findByText('assignment.pdf')
+    expect(mockPaymentGetForOrder).toHaveBeenCalledWith('order-1')
+    expect(screen.queryByText('Payment')).not.toBeInTheDocument()
+    expect(screen.queryByText(/could not load the payment details/i)).not.toBeInTheDocument()
+  })
+
+  it('shows an existing payment', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'QUEUED' }))
+    mockPaymentGetForOrder.mockResolvedValue({
+      paymentId: 'p1', orderId: 'order-1', amount: '25', paymentMethod: 'UPI', transactionId: 'TXN-9',
+      paymentStatus: 'SUCCESS', createdAt: new Date().toISOString(), paidAt: new Date().toISOString(),
+    })
+    renderPage()
+    expect(await screen.findByText(/UPI · SUCCESS/)).toBeInTheDocument()
+  })
+
+  it('does NOT hide a genuine server error: staff are told the payment could not be loaded', async () => {
+    mockGetOne.mockResolvedValue(makeOrder(oneItem(), { orderStatus: 'PLACED' }))
+    mockPaymentGetForOrder.mockRejectedValue(new ApiError(500, 'Internal server error'))
+    renderPage()
+    expect(await screen.findByText(/could not load the payment details/i)).toBeInTheDocument()
   })
 })

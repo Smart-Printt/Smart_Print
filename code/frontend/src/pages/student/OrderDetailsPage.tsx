@@ -45,6 +45,8 @@ export function OrderDetailsPage() {
   const [queue, setQueue] = useState<SafeQueueEntry | null>(null)
   const [payment, setPayment] = useState<SafePayment | null>(null)
   const [refund, setRefund] = useState<SafeRefund | null>(null)
+  const [refundLoadFailed, setRefundLoadFailed] = useState(false)
+  const [paymentLoadFailed, setPaymentLoadFailed] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [isCancelOpen, setIsCancelOpen] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
@@ -65,12 +67,32 @@ export function OrderDetailsPage() {
         setQueue(null)
       }
 
+      // null = no payment yet (not an error). A genuine failure is shown below
+      // instead of being mistaken for "no payment".
       if (!isZero(fetched.totalAmount)) {
-        paymentApi.getForOrder(orderId).then(setPayment).catch(() => setPayment(null))
+        paymentApi
+          .getForOrder(orderId)
+          .then((p) => {
+            setPayment(p)
+            setPaymentLoadFailed(false)
+          })
+          .catch(() => {
+            setPayment(null)
+            setPaymentLoadFailed(true)
+          })
       }
 
       if (fetched.orderStatus === 'CANCELLED' && !isZero(fetched.totalAmount)) {
-        refundApi.getForOrder(orderId).then(setRefund).catch(() => setRefund(null))
+        refundApi
+          .getForOrder(orderId)
+          .then((r) => {
+            setRefund(r)
+            setRefundLoadFailed(false)
+          })
+          .catch(() => {
+            setRefund(null)
+            setRefundLoadFailed(true)
+          })
       }
     } catch (err) {
       setError(err)
@@ -259,6 +281,22 @@ export function OrderDetailsPage() {
             <p style={{ fontWeight: 800, marginBottom: 10 }}>Payment</p>
             <p className="text-secondary" style={{ fontSize: 13.5 }}>
               {payment.paymentMethod} · {payment.paymentStatus} · {formatMoney(payment.amount)}
+            </p>
+          </Card>
+        )}
+
+        {paymentLoadFailed && (
+          <Card padded>
+            <p className="text-secondary" style={{ fontSize: 13.5 }}>
+              We couldn't load the payment details for this order. Please refresh to try again.
+            </p>
+          </Card>
+        )}
+
+        {refundLoadFailed && (
+          <Card padded>
+            <p className="text-secondary" style={{ fontSize: 13.5 }}>
+              We couldn't load the refund details for this order. Please refresh to try again.
             </p>
           </Card>
         )}

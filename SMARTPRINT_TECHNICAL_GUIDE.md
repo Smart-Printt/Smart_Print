@@ -222,7 +222,7 @@ Backend endpoint: various, gated by `requireRole('ADMIN')`.
 | PATCH | `/api/orders/:orderId/refund/process` | Settle refund | Yes | ADMIN | `processRefund` |
 | GET | `/api/orders/:orderId/refund` | View refund | Yes | owner/staff/admin | `getOne` |
 | GET | `/api/orders/:orderId/queue` | Get queue entry | Yes | owner/staff/admin | `queue.controller.getOne` |
-| GET | `/api/orders/:orderId/queue/position` | Get queue position | Yes | owner/staff/admin | `getPosition` |
+| GET | `/api/orders/:orderId/queue-position` | Get queue position | Yes | owner/staff/admin | `getPosition` |
 | PATCH | `/api/orders/:orderId/collect` | Mark collected | Yes | ADMIN/SHOP_STAFF | `collect` |
 | POST | `/api/shops` | Create shop | Yes | ADMIN | `shop.controller.create` |
 | GET | `/api/shops` | List shops | Yes | any | `list` |

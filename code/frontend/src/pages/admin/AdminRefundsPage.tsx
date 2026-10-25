@@ -34,14 +34,13 @@ export function AdminRefundsPage() {
       // orders are the only ones that could ever have one, so that's the
       // full candidate set; a 404 just means no refund was ever requested.
       const candidates = orders.filter((o) => o.orderStatus === 'CANCELLED' && !isZero(o.totalAmount))
+      // getForOrder resolves null for "no refund"; a genuine failure rejects
+      // and lands in the catch below (the page's error state), rather than
+      // silently dropping the row.
       const results = await Promise.all(
         candidates.map(async (order) => {
-          try {
-            const refund = await refundApi.getForOrder(order.orderId)
-            return { order, refund }
-          } catch {
-            return null
-          }
+          const refund = await refundApi.getForOrder(order.orderId)
+          return refund ? { order, refund } : null
         }),
       )
       setRows(results.filter((r): r is RefundRow => r !== null))

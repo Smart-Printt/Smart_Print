@@ -89,7 +89,7 @@ function backendWhereOrderBecomesQueuedAfterPayment() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockPaymentGet.mockRejectedValue(new ApiError(404, 'No payment found for this order'))
+  mockPaymentGet.mockResolvedValue(null) // no payment yet (what paymentApi returns for a 404)
   mockRefundGet.mockResolvedValue(null)
   mockInitiate.mockResolvedValue(payment('PENDING'))
 })
@@ -282,5 +282,47 @@ describe('OrderDetailsPage - resuming payment', () => {
     expect(within(dialog).queryByRole('button', { name: /^pay /i })).not.toBeInTheDocument()
     expect(mockInitiate).toHaveBeenCalledTimes(1)
     finish()
+  })
+})
+
+describe('OrderDetailsPage - optional payment lookup', () => {
+  const paymentCard = () => screen.queryByText(/UPI · /)
+  const loadFailedNotice = () => screen.queryByText(/couldn't load the payment details/i)
+
+  it('no payment yet (null): no payment card and no error notice, and payment can still be started', async () => {
+    mockGetOne.mockResolvedValue(makeOrder('PLACED'))
+    mockPaymentGet.mockResolvedValue(null)
+    renderPage()
+    await screen.findByText('SP-TEST-1')
+    expect(mockPaymentGet).toHaveBeenCalledWith('order-1')
+    expect(paymentCard()).not.toBeInTheDocument()
+    expect(loadFailedNotice()).not.toBeInTheDocument()
+    expect(payNow()).toBeInTheDocument()
+  })
+
+  it('an existing payment is shown', async () => {
+    mockGetOne.mockResolvedValue(makeOrder('QUEUED'))
+    mockPaymentGet.mockResolvedValue(payment('SUCCESS'))
+    renderPage()
+    expect(await screen.findByText(/UPI · SUCCESS/)).toBeInTheDocument()
+    expect(loadFailedNotice()).not.toBeInTheDocument()
+  })
+
+  it('does not look up a payment for a free order (it can never have one)', async () => {
+    mockGetOne.mockResolvedValue(makeOrder('QUEUED', { totalAmount: '0' }))
+    renderPage()
+    await screen.findByText('SP-TEST-1')
+    expect(mockPaymentGet).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['server error (500)', new ApiError(500, 'Internal server error')],
+    ['network failure', new ApiError(0, 'Connection lost.')],
+  ])('does NOT hide a %s: tells the student the payment details could not be loaded', async (_label, err) => {
+    mockGetOne.mockResolvedValue(makeOrder('PLACED'))
+    mockPaymentGet.mockRejectedValue(err)
+    renderPage()
+    expect(await screen.findByText(/couldn't load the payment details/i)).toBeInTheDocument()
+    expect(payNow()).toBeInTheDocument() // the order itself is still payable
   })
 })

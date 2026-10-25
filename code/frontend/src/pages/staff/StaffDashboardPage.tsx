@@ -65,7 +65,7 @@ export function StaffDashboardPage() {
   const [currentPayment, setCurrentPayment] = useState<SafePayment | null | undefined>(undefined)
   const [waiting, setWaiting] = useState<SafeQueueEntry[] | null>(null)
   const [waitingOrders, setWaitingOrders] = useState<Record<string, SafeOrder>>({})
-  const [waitingPayments, setWaitingPayments] = useState<Record<string, SafePayment | null>>({})
+  const [waitingPayments, setWaitingPayments] = useState<Record<string, SafePayment | null | undefined>>({})
   const [error, setError] = useState<unknown>(null)
   const [isActing, setIsActing] = useState(false)
   const [isTogglingStatus, setIsTogglingStatus] = useState(false)
@@ -90,7 +90,9 @@ export function StaffDashboardPage() {
           if (isZero(o.totalAmount)) {
             setCurrentPayment(null)
           } else {
-            paymentApi.getForOrder(o.orderId).then(setCurrentPayment).catch(() => setCurrentPayment(null))
+            // null = genuinely no payment yet; a failed lookup is UNKNOWN (undefined,
+            // so no badge) rather than a false "Payment pending".
+            paymentApi.getForOrder(o.orderId).then(setCurrentPayment).catch(() => setCurrentPayment(undefined))
           }
         }).catch(() => {
           setCurrentOrder(null)
@@ -118,12 +120,12 @@ export function StaffDashboardPage() {
         nextFew.map((entry) => {
           const o = map[entry.orderId]
           if (!o || isZero(o.totalAmount)) return Promise.resolve(null)
-          return paymentApi.getForOrder(entry.orderId).catch(() => null)
+          return paymentApi.getForOrder(entry.orderId).catch(() => undefined)
         }),
       )
-      const paymentMap: Record<string, SafePayment | null> = {}
+      const paymentMap: Record<string, SafePayment | null | undefined> = {}
       nextFew.forEach((entry, i) => {
-        paymentMap[entry.orderId] = payments[i] ?? null
+        paymentMap[entry.orderId] = payments[i]
       })
       setWaitingPayments(paymentMap)
     } catch (err) {

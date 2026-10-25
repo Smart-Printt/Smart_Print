@@ -545,3 +545,42 @@ describe('StaffDashboardPage - "Next up" card document actions', () => {
     expect(screen.getAllByRole('button', { name: /^view$/i })).toHaveLength(1)
   })
 })
+
+describe('StaffDashboardPage - payment badge for the next-up order', () => {
+  const waitingEntry = queueEntry({ queueId: 'q-wait', orderId: 'order-2', orderCode: 'SP-2000', queueStatus: 'WAITING', queueNumber: 2, position: 1 })
+
+  function setUp(paymentResult: () => Promise<unknown>) {
+    mockShopGetOne.mockResolvedValue(shop({ shopId: waitingEntry.shopId, shopCode: 'G_BLOCK', shopName: 'G Block Print Shop' }))
+    mockQueueCurrent.mockResolvedValue(null)
+    mockQueueList.mockResolvedValue([waitingEntry])
+    mockOrderGetOne.mockResolvedValue(order([orderItem({ documentId: 'doc-n', fileName: 'next.pdf' })], { orderId: 'order-2', orderStatus: 'QUEUED' }))
+    mockPaymentGetForOrder.mockImplementation(paymentResult)
+    mockUseAuth.mockReturnValue({
+      user: { userId: 'u1', name: 'G Staff', email: 'g@t.com', phone: null, role: 'SHOP_STAFF', status: 'ACTIVE', shopId: waitingEntry.shopId },
+    })
+  }
+
+  it('no payment record yet (null) says "Payment pending"', async () => {
+    setUp(() => Promise.resolve(null))
+    renderDashboard()
+    await screen.findByText('Next up')
+    expect(await screen.findByText('Payment pending')).toBeInTheDocument()
+  })
+
+  it('a successful payment shows its status, not "Payment pending"', async () => {
+    setUp(() => Promise.resolve({ paymentId: 'p', orderId: 'order-2', amount: '28', paymentMethod: 'UPI', transactionId: 'T', paymentStatus: 'SUCCESS', createdAt: '2026-01-01T00:00:00.000Z', paidAt: '2026-01-01T00:00:00.000Z' }))
+    renderDashboard()
+    await screen.findByText('Next up')
+    await waitFor(() => expect(screen.getByText(/success/i)).toBeInTheDocument())
+    expect(screen.queryByText('Payment pending')).not.toBeInTheDocument()
+  })
+
+  it('a FAILED lookup (server error) is unknown: no badge, and never a false "Payment pending"', async () => {
+    setUp(() => Promise.reject(new Error('500')))
+    renderDashboard()
+    await screen.findByText('Next up')
+    await waitFor(() => expect(mockPaymentGetForOrder).toHaveBeenCalled())
+    await screen.findAllByText('next.pdf')
+    expect(screen.queryByText('Payment pending')).not.toBeInTheDocument()
+  })
+})
