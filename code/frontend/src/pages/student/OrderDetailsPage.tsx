@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/StateBlock'
 import { TextArea } from '@/components/ui/Input'
 import { PageHeader } from '@/layouts/AppShell'
+import { StepPayment } from '@/pages/student/print-flow/StepPayment'
 import { orderApi } from '@/services/orderApi'
 import { queueApi } from '@/services/queueApi'
 import { refundApi } from '@/services/refundApi'
@@ -44,11 +45,14 @@ export function OrderDetailsPage() {
   const [queue, setQueue] = useState<SafeQueueEntry | null>(null)
   const [payment, setPayment] = useState<SafePayment | null>(null)
   const [refund, setRefund] = useState<SafeRefund | null>(null)
+  const [refundLoadFailed, setRefundLoadFailed] = useState(false)
+  const [paymentLoadFailed, setPaymentLoadFailed] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [isCancelOpen, setIsCancelOpen] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
   const [isCancelling, setIsCancelling] = useState(false)
   const [isRequestingRefund, setIsRequestingRefund] = useState(false)
+  const [isPaying, setIsPaying] = useState(false)
 
   const load = useCallback(async () => {
     if (!orderId) return
@@ -63,12 +67,32 @@ export function OrderDetailsPage() {
         setQueue(null)
       }
 
+      // null = no payment yet (not an error). A genuine failure is shown below
+      // instead of being mistaken for "no payment".
       if (!isZero(fetched.totalAmount)) {
-        paymentApi.getForOrder(orderId).then(setPayment).catch(() => setPayment(null))
+        paymentApi
+          .getForOrder(orderId)
+          .then((p) => {
+            setPayment(p)
+            setPaymentLoadFailed(false)
+          })
+          .catch(() => {
+            setPayment(null)
+            setPaymentLoadFailed(true)
+          })
       }
 
       if (fetched.orderStatus === 'CANCELLED' && !isZero(fetched.totalAmount)) {
-        refundApi.getForOrder(orderId).then(setRefund).catch(() => setRefund(null))
+        refundApi
+          .getForOrder(orderId)
+          .then((r) => {
+            setRefund(r)
+            setRefundLoadFailed(false)
+          })
+          .catch(() => {
+            setRefund(null)
+            setRefundLoadFailed(true)
+          })
       }
     } catch (err) {
       setError(err)
@@ -100,6 +124,16 @@ export function OrderDetailsPage() {
     } finally {
       setIsCancelling(false)
     }
+  }
+
+  // Resumes the existing mock-payment flow for THIS order (no new order, so
+  // no idempotency key is involved): StepPayment initiates (or picks up the
+  // already pending payment) and confirms, then we re-read the order.
+  function handlePaid(paid: SafeOrder) {
+    setOrder(paid)
+    setIsPaying(false)
+    showToast('Payment confirmed.', 'success')
+    void load()
   }
 
   async function handleRequestRefund() {
@@ -137,6 +171,9 @@ export function OrderDetailsPage() {
   const isFree = isZero(order.totalAmount)
   const canCancel = CANCELLABLE_ORDER_STATUSES.includes(order.orderStatus)
   const canRequestRefund = order.orderStatus === 'CANCELLED' && !isFree && payment?.paymentStatus === 'SUCCESS' && !refund
+  // Only an unpaid (PLACED), non-free order can be paid; a PAYMENT_CONFIRMED /
+  // QUEUED / ... order is already paid and a CANCELLED one is no longer payable.
+  const canPay = order.orderStatus === 'PLACED' && !isFree
   const canReprint = order.orderStatus === 'COLLECTED' || order.orderStatus === 'CANCELLED'
 
   const upcoming =
@@ -248,6 +285,22 @@ export function OrderDetailsPage() {
           </Card>
         )}
 
+        {paymentLoadFailed && (
+          <Card padded>
+            <p className="text-secondary" style={{ fontSize: 13.5 }}>
+              We couldn't load the payment details for this order. Please refresh to try again.
+            </p>
+          </Card>
+        )}
+
+        {refundLoadFailed && (
+          <Card padded>
+            <p className="text-secondary" style={{ fontSize: 13.5 }}>
+              We couldn't load the refund details for this order. Please refresh to try again.
+            </p>
+          </Card>
+        )}
+
         {refund && (
           <Card padded>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -263,6 +316,11 @@ export function OrderDetailsPage() {
         {canCancel && (
           <Button variant="danger" onClick={() => setIsCancelOpen(true)}>
             Cancel Order
+          </Button>
+        )}
+        {canPay && (
+          <Button onClick={() => setIsPaying(true)}>
+            {payment?.paymentStatus === 'FAILED' ? 'Retry payment' : 'Pay now'}
           </Button>
         )}
         {canRequestRefund && (
@@ -283,6 +341,10 @@ export function OrderDetailsPage() {
           <Button variant="ghost">Back to Orders</Button>
         </Link>
       </div>
+
+      <Modal isOpen={isPaying && canPay} title="Complete payment" onClose={() => setIsPaying(false)} maxWidth={520}>
+        <StepPayment order={order} onPaid={handlePaid} onBack={() => setIsPaying(false)} />
+      </Modal>
 
       <Modal isOpen={isCancelOpen} title="Cancel this order?" onClose={() => setIsCancelOpen(false)}>
         <p className="modal__body">This can't be undone once printing has started.</p>

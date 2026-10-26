@@ -40,6 +40,14 @@ export class NotFoundError extends AppError {
   }
 }
 
+// The request is fine but a dependency (e.g. the document storage backend)
+// failed in a way the client cannot fix; retrying later may succeed.
+export class ServiceUnavailableError extends AppError {
+  constructor(message = 'Service temporarily unavailable. Please try again shortly.') {
+    super(503, message);
+  }
+}
+
 export class PayloadTooLargeError extends AppError {
   constructor(message: string) {
     super(413, message);

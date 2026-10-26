@@ -5,6 +5,7 @@ import { Order, OrderDocument, OrderStatusHistory, Prisma, PrintShop, UserRole }
 import { CANCELLABLE_ORDER_STATUSES, MAX_SPECIAL_INSTRUCTIONS_LENGTH } from '../config/orderPolicy';
 import { prisma } from '../config/prisma';
 import { lockOrder, lockShop, transitionOrder } from './orderLocks';
+import * as documentService from './document.service';
 import * as pricingService from './pricing.service';
 import * as queueService from './queue.service';
 import * as shopService from './shop.service';
@@ -263,8 +264,10 @@ export async function createOrder(
       // commit no referenced document can be deleted, and one that is already
       // gone is reported as 404 instead of surfacing as a foreign-key failure.
       const documentIds = [...new Set(finalItems.map((item) => item.documentId))].sort();
-      const lockedDocuments = await tx.$queryRaw<{ document_id: string; user_id: string }[]>`
-        SELECT document_id, user_id FROM documents
+      const lockedDocuments = await tx.$queryRaw<
+        { document_id: string; user_id: string; storage_key: string; file_name: string }[]
+      >`
+        SELECT document_id, user_id, storage_key, file_name FROM documents
         WHERE document_id IN (${Prisma.join(documentIds)})
         ORDER BY document_id
         FOR SHARE`;
@@ -274,6 +277,20 @@ export async function createOrder(
       ) {
         throw new NotFoundError('Document not found');
       }
+
+      // Only now (ownership established, so nothing is revealed about anyone
+      // else's documents) check that each file is actually there and
+      // readable. This runs under the share lock above, so deleteDocument
+      // cannot remove the row/file out from under us before this order
+      // commits. The remaining limit is a file deleted OUTSIDE the
+      // application (manual deletion, disk or bucket loss) in the instant
+      // between this check and commit; printing still reports that as a clean
+      // 404 (see loadDocumentStream). Any failure here aborts the
+      // transaction, so no order, queue entry, payment or history row is
+      // created for an unprintable order.
+      await documentService.assertFilesAvailable(
+        lockedDocuments.map((row) => ({ fileName: row.file_name, storageKey: row.storage_key })),
+      );
 
       await tx.order.create({
         data: {

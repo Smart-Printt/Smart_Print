@@ -1,9 +1,9 @@
-import { createReadStream } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 
-import { StorageService } from './storage.service';
+import { StorageAvailability, StorageService } from './storage.service';
 
 // Private local-filesystem storage for Phase 3. `storageKey` is always a
 // server-generated UUID + validated extension (see utils/fileNaming.ts) -
@@ -61,6 +61,26 @@ export class LocalStorageService implements StorageService {
         throw err;
       }
       // Already missing - deletion is idempotent/safe to retry.
+    }
+  }
+
+  async checkAvailability(storageKey: string): Promise<StorageAvailability> {
+    const target = this.resolveSafePath(storageKey);
+    try {
+      const stats = await fs.stat(target);
+      if (!stats.isFile()) {
+        return 'missing';
+      }
+      // Present but not readable (EACCES/EPERM) is a storage problem, not a
+      // missing file, so it propagates instead of being reported as 'missing'.
+      await fs.access(target, constants.R_OK);
+      return 'available';
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return 'missing';
+      }
+      throw err;
     }
   }
 

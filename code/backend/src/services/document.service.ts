@@ -6,7 +6,7 @@ import { Document, UserRole } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { storageService } from './storage';
 import { SafeDocument, UploadedFileInput } from '../types/document.types';
-import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
+import { ConflictError, NotFoundError, ServiceUnavailableError, ValidationError } from '../utils/errors';
 import { generateStorageKey, sanitizeOriginalFileName } from '../utils/fileNaming';
 import { sha256Hex } from '../utils/hash';
 import { validateUploadedFile } from './documents/fileValidation.service';
@@ -166,6 +166,43 @@ async function findAccessibleDocumentOrThrow(
     throw new NotFoundError('Document not found');
   }
   return document;
+}
+
+const MAX_NAMES_IN_MESSAGE = 5;
+
+// Verifies that every given document's stored object exists and is readable.
+// Callers must already have established that the documents belong to the
+// requester (this reports file names), which is why order creation runs it
+// only after its ownership check. Throws:
+//   409 ConflictError            - one or more files are definitely missing
+//   503 ServiceUnavailableError  - storage could not be checked (not the
+//                                  client's fault; retrying may succeed)
+// Nothing is deleted or modified: a missing file leaves the document row, and
+// any order that already references it, exactly as they were.
+export async function assertFilesAvailable(
+  documents: { fileName: string; storageKey: string }[],
+): Promise<void> {
+  let states: Awaited<ReturnType<typeof storageService.checkAvailability>>[];
+  try {
+    states = await Promise.all(documents.map((d) => storageService.checkAvailability(d.storageKey)));
+  } catch (err) {
+    // Log the error code only: storage errors can embed file paths.
+    // eslint-disable-next-line no-console
+    console.error('Document storage availability check failed:', (err as NodeJS.ErrnoException).code ?? (err as Error).name);
+    throw new ServiceUnavailableError('Document storage is temporarily unavailable. Please try again shortly.');
+  }
+
+  const missing = documents.filter((_, i) => states[i] === 'missing').map((d) => d.fileName);
+  if (missing.length === 0) {
+    return;
+  }
+  const shown = missing.slice(0, MAX_NAMES_IN_MESSAGE).map((name) => `"${name}"`).join(', ');
+  const extra = missing.length > MAX_NAMES_IN_MESSAGE ? ` and ${missing.length - MAX_NAMES_IN_MESSAGE} more` : '';
+  throw new ConflictError(
+    missing.length === 1
+      ? `The file for ${shown} is no longer available. Please upload it again before placing the order.`
+      : `The files for ${shown}${extra} are no longer available. Please upload them again before placing the order.`,
+  );
 }
 
 export interface DownloadableDocument {

@@ -7,6 +7,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { orderApi } from '@/services/orderApi'
 import { paymentApi } from '@/services/paymentApi'
 import type { PaymentMethod, SafeOrder } from '@/types'
+import { ApiError } from '@/types/api'
 import { formatMoney } from '@/utils/money'
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
@@ -39,7 +40,16 @@ export function StepPayment({ order, onPaid, onBack }: StepPaymentProps) {
     setPhase('processing')
     setError(null)
     try {
-      await paymentApi.initiate(order.orderId, method)
+      try {
+        await paymentApi.initiate(order.orderId, method)
+      } catch (err) {
+        // 409 = a payment was already started for this order (the user left
+        // this screen between "initiate" and "confirm", or double-clicked).
+        // Carry on and confirm that pending payment instead of looping on
+        // "Payment failed". If the order is not payable at all, confirm
+        // fails too and the failure is shown as before.
+        if (!(err instanceof ApiError && err.status === 409)) throw err
+      }
       await paymentApi.confirm(order.orderId, simulateFailure ? 'FAILED' : undefined)
       const refreshed = await orderApi.getOne(order.orderId)
       if (refreshed.orderStatus === 'QUEUED') {

@@ -1,7 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { PricingPreviewResult, SafeDocument, SafeShop } from '@/types'
+import { ApiError } from '@/types/api'
+import { orderApi } from '@/services/orderApi'
 import { DEFAULT_SETTINGS } from './types'
 import type { OrderItemDraft } from './types'
 import { StepReview } from './StepReview'
@@ -86,5 +89,56 @@ describe('StepReview - multi-document order review', () => {
     render(<StepReview shop={SHOP} items={items} preview={freePreview} getIdempotencyKey={() => 'test-key-12345678'} onBack={vi.fn()} onOrderCreated={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Place Free Order' })).toBeInTheDocument()
     expect(screen.getByText('Free')).toBeInTheDocument()
+  })
+})
+
+describe('StepReview - order rejection messages', () => {
+  const mockCreate = vi.mocked(orderApi.create)
+
+  async function placeOrderExpectingError(error: unknown) {
+    mockCreate.mockReset()
+    mockCreate.mockRejectedValue(error)
+    const onOrderCreated = vi.fn()
+    render(
+      <StepReview shop={SHOP} items={items} preview={preview} getIdempotencyKey={() => 'test-key-12345678'} onBack={vi.fn()} onOrderCreated={onOrderCreated} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    const alert = await screen.findByRole('alert')
+    expect(onOrderCreated).not.toHaveBeenCalled()
+    return alert
+  }
+
+  it('shows the server message when a selected document file is no longer available (409)', async () => {
+    const message = 'The file for "Assignment.pdf" is no longer available. Please upload it again before placing the order.'
+    const alert = await placeOrderExpectingError(new ApiError(409, message))
+    expect(alert).toHaveTextContent(message)
+  })
+
+  it('shows the server message when document storage is temporarily unavailable (503)', async () => {
+    const message = 'Document storage is temporarily unavailable. Please try again shortly.'
+    const alert = await placeOrderExpectingError(new ApiError(503, message))
+    expect(alert).toHaveTextContent(message)
+  })
+
+  it('keeps the generic message for unexpected failures (does not leak server internals)', async () => {
+    const alert = await placeOrderExpectingError(new ApiError(500, 'stack trace here'))
+    expect(alert).toHaveTextContent('Could not place your order. Please try again.')
+    expect(alert).not.toHaveTextContent('stack trace here')
+  })
+
+  it('lets the user retry after a rejection, with the same idempotency key (no duplicate order)', async () => {
+    mockCreate.mockReset()
+    mockCreate.mockRejectedValueOnce(new ApiError(503, 'Document storage is temporarily unavailable. Please try again shortly.'))
+    mockCreate.mockResolvedValueOnce({ orderId: 'o1' } as never)
+    const onOrderCreated = vi.fn()
+    render(
+      <StepReview shop={SHOP} items={items} preview={preview} getIdempotencyKey={() => 'test-key-12345678'} onBack={vi.fn()} onOrderCreated={onOrderCreated} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await screen.findByRole('alert')
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await waitFor(() => expect(onOrderCreated).toHaveBeenCalledTimes(1))
+    expect(mockCreate.mock.calls[0]![1]).toBe('test-key-12345678')
+    expect(mockCreate.mock.calls[1]![1]).toBe('test-key-12345678')
   })
 })
