@@ -200,3 +200,27 @@ Known limitation: sessions are stateless JWTs, so a token a user already holds
 keeps working until it expires even after a reset. Revoking them would need a
 `passwordChangedAt` column (a migration); that was deliberately not added.
 Expired reset rows are not purged automatically.
+
+### Email providers
+
+All mail goes through the `EmailService` interface
+(`src/services/email/`); choose the implementation with `EMAIL_PROVIDER`:
+
+| `EMAIL_PROVIDER` | Behaviour |
+|---|---|
+| *(unset)* | **SMTP** if `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER` and `EMAIL_PASSWORD` are all set; otherwise the **dev console** (development/test only). Production without SMTP refuses to start. |
+| `smtp` | SMTP; the four variables above are required. |
+| `console` | Prints the message, including the reset link, to the server console. Never allowed in production. |
+| `mock` | In-memory outbox (`MockEmailService`) for automated tests. Never allowed in production. The test setup forces it, so tests cannot send real email. |
+
+No paid service is required or assumed. Any SMTP server works. For local
+end-to-end testing, a local mail catcher (e.g. Mailpit) or a free test inbox
+(e.g. Ethereal) can be pointed at with `EMAIL_HOST`/`EMAIL_PORT`/`EMAIL_USER`/
+`EMAIL_PASSWORD`. Never commit credentials: put them in the untracked `.env`.
+Adding another vendor (Resend, SendGrid, SES...) means one new class
+implementing `EmailService` and one `case` in `createEmailService`.
+
+Production checklist: `EMAIL_*` (or `EMAIL_PROVIDER=smtp`) set, `EMAIL_FROM`
+set to an address your SMTP account may send from, and `FRONTEND_URL` set to
+the public **https** URL of the frontend - the reset link is built from it, and
+startup is refused if it is missing, not https, or points at localhost.

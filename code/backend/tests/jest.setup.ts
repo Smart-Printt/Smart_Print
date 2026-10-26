@@ -21,3 +21,9 @@ process.env.UPLOAD_DIR = 'tests/tmp-uploads';
 // in quick succession from one client). tests/rateLimit.test.ts turns them
 // on explicitly through createApp() options.
 process.env.RATE_LIMIT_ENABLED = 'false';
+
+// Tests never send real email, even if SMTP credentials happen to be present in
+// the environment: the in-memory mock provider is forced (see
+// src/services/email/index.ts). tests/passwordReset.test.ts covers the
+// production configuration checks separately.
+process.env.EMAIL_PROVIDER = 'mock';
