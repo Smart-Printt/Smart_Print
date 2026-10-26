@@ -54,6 +54,13 @@ function resetPasswordErrorMessage(error: unknown): { message: string; isInvalid
     if (error.status === 400) {
       return { message: error.message || 'Please check your details and try again.', isInvalidToken: false }
     }
+    if (error.status === 429) {
+      // Rate limited, NOT a bad link: the token is still valid, so keep the form.
+      return {
+        message: error.message || 'Too many attempts. Please wait a few minutes and try again.',
+        isInvalidToken: false,
+      }
+    }
     if (error.status === 0) {
       return { message: 'Connection lost. Please check your network and try again.', isInvalidToken: false }
     }
