@@ -176,3 +176,27 @@ the payment step and places the same order again.
 
 Payment initiation is not keyed: a second "Pay" is already refused (`409`)
 while a payment is pending, and a second success is impossible.
+
+## Password reset and email
+
+`POST /api/auth/forgot-password` `{ email }` and `POST /api/auth/reset-password`
+`{ token, password, confirmPassword }` are public; the emailed token is the
+only credential.
+
+How it behaves:
+
+| Rule | Detail |
+|---|---|
+| Same answer always | `forgot-password` returns the identical `200` body whether or not the account exists, is inactive, or mail delivery fails. An invalid email *format* is a `400` (that reveals nothing about accounts). |
+| Not timeable | The mail is handed to the provider **without** waiting for it, so a slow mail server cannot be used to tell "account exists" from "no such account". Delivery failures are logged server-side only. A small difference (one extra database write) remains; the per-IP+email rate limit (3 per 15 min) bounds how much of it can be measured. |
+| Token | 32 bytes from the CSPRNG, hex-encoded. Only its SHA-256 is stored (`password_reset_tokens.token_hash`), tied to the user, valid for 1 hour. A new request invalidates earlier unused links ("latest link wins"). |
+| Single use, race-safe | The token is claimed with one conditional `UPDATE ... WHERE used_at IS NULL AND expires_at > now()`, so two simultaneous submissions cannot both succeed. |
+| Only the password changes | The new password goes through the same policy and bcrypt hashing as registration. `role`, `status`, `email`, `userId` or any other field in the request is ignored. |
+| Deactivated accounts | A link issued while the account was active stops working once it is deactivated (and stays consumed). Recovery never reactivates an account. |
+| One error for a bad link | Unknown, expired, already-used and deactivated-account links all return the same `401` message. |
+| Rate limits | `forgot-password`: 3 / 15 min per IP + email. `reset-password`: 10 / 15 min per IP. Both also count toward the 100 / 15 min per-IP auth limit. |
+
+Known limitation: sessions are stateless JWTs, so a token a user already holds
+keeps working until it expires even after a reset. Revoking them would need a
+`passwordChangedAt` column (a migration); that was deliberately not added.
+Expired reset rows are not purged automatically.

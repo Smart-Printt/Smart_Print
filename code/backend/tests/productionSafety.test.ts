@@ -19,6 +19,7 @@ function productionConfig(overrides: Partial<SecurityConfig> = {}): SecurityConf
     nodeEnv: 'production',
     paymentProvider: 'live-provider-placeholder',
     corsAllowedOrigins: ['https://app.example.edu'],
+    frontendUrl: 'https://app.example.edu',
     rateLimit: { ...base.rateLimit, enabled: true },
     ...overrides,
   };
@@ -212,5 +213,40 @@ describe('server startup (child process)', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/NODE_ENV="staging" is not valid/);
     expect(result.stdout).not.toMatch(/Database connection established/);
+  });
+});
+
+describe('assertStartupSafety - FRONTEND_URL (password reset links)', () => {
+  it('passes with a public https URL (a trailing slash is fine)', () => {
+    for (const frontendUrl of ['https://print.example.edu', 'https://print.example.edu/', 'https://print.example.edu/app']) {
+      expect(() => assertStartupSafety(productionConfig({ frontendUrl }), true)).not.toThrow();
+    }
+  });
+
+  it('refuses a production start with FRONTEND_URL unset or blank (links would point at localhost)', () => {
+    for (const frontendUrl of [undefined, '', '   ']) {
+      expect(() => assertStartupSafety(productionConfig({ frontendUrl }), true)).toThrow(/FRONTEND_URL must be set/);
+    }
+  });
+
+  it.each(['http://print.example.edu', 'ftp://print.example.edu'])('refuses a non-https FRONTEND_URL: %s', (frontendUrl) => {
+    expect(() => assertStartupSafety(productionConfig({ frontendUrl }), true)).toThrow(/must use https/);
+  });
+
+  it.each(['https://localhost', 'https://127.0.0.1:5173', 'https://[::1]'])('refuses a loopback FRONTEND_URL: %s', (frontendUrl) => {
+    expect(() => assertStartupSafety(productionConfig({ frontendUrl }), true)).toThrow(/must not point at/);
+  });
+
+  it('refuses an unparseable FRONTEND_URL and one carrying credentials / a query string', () => {
+    expect(() => assertStartupSafety(productionConfig({ frontendUrl: 'not a url' }), true)).toThrow(/not a valid URL/);
+    expect(() => assertStartupSafety(productionConfig({ frontendUrl: 'https://user:pw@print.example.edu' }), true)).toThrow(/credentials/);
+    expect(() => assertStartupSafety(productionConfig({ frontendUrl: 'https://print.example.edu/?x=1' }), true)).toThrow(/query string/);
+  });
+
+  it('is not enforced in development or test (the localhost default is intended there)', () => {
+    for (const nodeEnv of ['development', 'test']) {
+      const config = productionConfig({ rawNodeEnv: nodeEnv, nodeEnv, paymentProvider: 'mock', frontendUrl: undefined });
+      expect(() => assertStartupSafety(config, false)).not.toThrow();
+    }
   });
 });

@@ -253,14 +253,21 @@ export async function requestPasswordReset(input: ForgotPasswordInput): Promise<
     }),
   ]);
 
-  const resetUrl = `${env.frontendUrl}/reset-password?token=${rawToken}`;
+  const resetUrl = `${env.frontendUrl.replace(/\/+$/, '')}/reset-password?token=${rawToken}`;
 
+  // Delivery is deliberately NOT awaited. Sending mail takes orders of
+  // magnitude longer than the early return for an unknown address, so waiting
+  // for it would let anyone tell "account exists" from "no such account" by
+  // timing the response - undoing the identical-response defense above. The
+  // message is handed to the provider immediately; its outcome is only ever
+  // logged server-side (never to the caller), whether it succeeds or fails.
+  void deliverPasswordResetEmail(user.email, resetUrl);
+}
+
+async function deliverPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
   try {
-    await emailService.send(buildPasswordResetEmail(user.email, resetUrl));
+    await emailService.send(buildPasswordResetEmail(to, resetUrl));
   } catch (err) {
-    // A delivery failure must never change the (already-sent-by-now)
-    // response shape - surfaced only server-side, for an operator to
-    // diagnose, never to the caller.
     // eslint-disable-next-line no-console
     console.error(
       'Failed to send password reset email:',
@@ -290,7 +297,7 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
   const tokenHash = hashResetToken(input.token.trim());
   const passwordHash = await hashPassword(input.password);
 
-  await prisma.$transaction(async (tx) => {
+  const accepted = await prisma.$transaction(async (tx) => {
     // A single conditional UPDATE is the atomic "claim" of this token: if
     // two requests race on the same token, only the first can ever match
     // `usedAt: null` (Postgres re-checks the WHERE clause against the
@@ -301,11 +308,23 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
       data: { usedAt: new Date() },
     });
     if (claimed.count === 0) {
-      throw new UnauthorizedError(INVALID_TOKEN_MESSAGE);
+      return false;
     }
 
-    const resetToken = await tx.passwordResetToken.findUniqueOrThrow({ where: { tokenHash } });
+    const resetToken = await tx.passwordResetToken.findUniqueOrThrow({
+      where: { tokenHash },
+      include: { user: { select: { status: true } } },
+    });
 
+    // A link issued while the account was active must not work once it has
+    // been deactivated: recovery never reactivates or edits an account. The
+    // token stays consumed (the claim above commits), so the link cannot come
+    // back to life if the account is later reactivated.
+    if (resetToken.user.status !== 'ACTIVE') {
+      return false;
+    }
+
+    // Only the password changes - never the role, status, email or shop.
     await tx.user.update({ where: { userId: resetToken.userId }, data: { passwordHash } });
 
     // Defensive cleanup: any other still-unused token for this user (e.g.
@@ -315,5 +334,12 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
       where: { userId: resetToken.userId, usedAt: null },
       data: { usedAt: new Date() },
     });
+    return true;
   });
+
+  // One message for every way a link can be unusable (unknown, expired, used,
+  // or belonging to a deactivated account) so the response reveals nothing.
+  if (!accepted) {
+    throw new UnauthorizedError(INVALID_TOKEN_MESSAGE);
+  }
 }

@@ -43,6 +43,9 @@ export interface SecurityConfig {
   nodeEnv: string;
   paymentProvider: string;
   corsAllowedOrigins: string[];
+  // FRONTEND_URL exactly as provided (undefined when unset). The password-reset
+  // email links to `${FRONTEND_URL}/reset-password?token=...`.
+  frontendUrl: string | undefined;
   trustProxy: number | false;
   rateLimit: RateLimitConfig;
 }
@@ -168,6 +171,7 @@ export function loadSecurityConfig(): SecurityConfig {
     nodeEnv,
     paymentProvider: readPaymentProviderName(),
     corsAllowedOrigins: resolveAllowedOrigins(nodeEnv),
+    frontendUrl: process.env.FRONTEND_URL,
     trustProxy: resolveTrustProxy(),
     rateLimit: resolveRateLimits(),
   };
@@ -182,6 +186,35 @@ export function isCompiledBuild(): boolean {
 // Called by server.ts before anything else is loaded. There is deliberately
 // no override variable: a deployment that fails these checks must be fixed,
 // not exempted.
+// The reset link in the password-reset email is built from FRONTEND_URL. Its
+// development default is http://localhost:5173, so a production deploy that
+// forgets to set it would email every user a link that cannot work (and sends
+// the token over plain http if it were set to an http URL).
+function frontendUrlProblems(raw: string | undefined): string[] {
+  if (raw === undefined || raw.trim() === '') {
+    return [
+      'FRONTEND_URL must be set to the public https URL of the frontend (it is used to build password reset links).',
+    ];
+  }
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return [`FRONTEND_URL "${raw}" is not a valid URL.`];
+  }
+  const problems: string[] = [];
+  if (url.protocol !== 'https:') {
+    problems.push(`FRONTEND_URL must use https in production (got "${url.protocol}//").`);
+  }
+  if (['localhost', '127.0.0.1', '[::1]', '0.0.0.0'].includes(url.hostname)) {
+    problems.push(`FRONTEND_URL must not point at ${url.hostname} in production.`);
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    problems.push('FRONTEND_URL must not contain credentials, a query string or a fragment.');
+  }
+  return problems;
+}
+
 export function assertStartupSafety(config: SecurityConfig, compiled: boolean = isCompiledBuild()): void {
   const problems: string[] = [];
 
@@ -215,6 +248,7 @@ export function assertStartupSafety(config: SecurityConfig, compiled: boolean = 
     if (!config.rateLimit.enabled) {
       problems.push('RATE_LIMIT_ENABLED=false is not allowed in production.');
     }
+    problems.push(...frontendUrlProblems(config.frontendUrl));
   }
 
   if (problems.length > 0) {
