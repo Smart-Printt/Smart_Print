@@ -34,6 +34,9 @@ export const env = {
   // server port for local development.
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:5173',
   email: {
+    // Optional explicit provider: smtp | console | mock (see services/email/index.ts).
+    // Unset = automatic: SMTP when fully configured, otherwise the dev console.
+    provider: process.env.EMAIL_PROVIDER?.trim().toLowerCase() || undefined,
     from: process.env.EMAIL_FROM ?? 'SmartPrint <no-reply@smartprint.dev>',
     host: process.env.EMAIL_HOST,
     port: emailPort,
