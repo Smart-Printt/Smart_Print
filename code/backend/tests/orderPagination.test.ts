@@ -210,8 +210,11 @@ describe('GET /api/orders filtering', () => {
   });
 
   it('treats % and _ in the search as plain characters', async () => {
-    const res = await list(student.token, { q: '%' });
-    expect(res.body.data.orders).toEqual([]);
+    for (const wildcard of ['%', '_', '\\']) {
+      const res = await list(student.token, { q: wildcard });
+      expect(res.status).toBe(200);
+      expect(res.body.data.orders).toEqual([]);
+    }
   });
 
   it('combines filters and still paginates the filtered set', async () => {

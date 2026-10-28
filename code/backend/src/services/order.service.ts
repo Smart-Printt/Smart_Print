@@ -375,7 +375,9 @@ async function findOrderPage(scope: Prisma.OrderWhereInput, query: OrderListQuer
     filters.shopId = query.shopId;
   }
   if (query.search) {
-    filters.orderCode = { contains: query.search, mode: 'insensitive' };
+    // Prisma's `contains` does not escape LIKE wildcards, so a search for
+    // "%" or "_" would match everything. Escape them (and the escape character).
+    filters.orderCode = { contains: query.search.replace(/[\\%_]/g, '\\$&'), mode: 'insensitive' };
   }
 
   // The scope (whose orders the caller may see) and the caller's filters are
