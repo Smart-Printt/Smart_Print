@@ -506,7 +506,8 @@ describe('PATCH /api/admin/staff/:id - staff update', () => {
     const res = await request(app)
       .get(`/api/shops/${shop.shopId}/queue`)
       .set('Authorization', `Bearer ${staffToken}`);
-    expect(res.status).toBe(403);
+    // authenticate() rejects a deactivated account before any shop check.
+    expect(res.status).toBe(401);
   });
 });
 
@@ -770,7 +771,8 @@ describe('shop-scoped staff pricing management', () => {
       .post(`/api/shops/${shop.shopId}/pricing-rules`)
       .set('Authorization', `Bearer ${staff.token}`)
       .send({ printType: 'COLOR', paperSize: 'A4', sides: 'SINGLE', pricePerPage: 9 });
-    expect(createRes.status).toBe(403);
+    // authenticate() rejects a deactivated account before any shop check.
+    expect(createRes.status).toBe(401);
   });
 });
 

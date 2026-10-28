@@ -238,7 +238,8 @@ describe('secure staff/admin document access', () => {
       const res = await request(app)
         .get(`/api/documents/${gBlockOrder.documentId}/download`)
         .set('Authorization', `Bearer ${inactiveStaff.token}`);
-      expect(res.status).toBe(404);
+      // authenticate() rejects a deactivated account before any shop check.
+      expect(res.status).toBe(401);
     });
 
     it('11. admin can access documents from all shops', async () => {
