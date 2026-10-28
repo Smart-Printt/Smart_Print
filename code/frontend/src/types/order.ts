@@ -67,3 +67,31 @@ export interface CreateOrderInput {
   shopId: string
   items: CreateOrderItemInput[]
 }
+
+export interface Pagination {
+  page: number
+  limit: number
+  total: number
+  totalPages: number
+}
+
+export interface PaginatedOrders {
+  orders: SafeOrder[]
+  pagination: Pagination
+}
+
+// Every field is optional: the server defaults to page 1, 20 per page, any status.
+export interface OrderListParams {
+  page?: number
+  limit?: number
+  status?: OrderStatus[]
+  from?: string
+  to?: string
+  shopId?: string
+  q?: string
+}
+
+export interface OrderSummary {
+  orderCount: number
+  revenue: string
+}

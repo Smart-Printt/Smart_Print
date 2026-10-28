@@ -270,6 +270,10 @@ model Order {
   @@index([shopId])
   @@index([orderStatus])
   @@index([createdAt])
+  // Serve the paginated order list (newest first, optionally by status) for one
+  // user or one shop without sorting the rows in memory.
+  @@index([userId, orderStatus, createdAt(sort: Desc)])
+  @@index([shopId, orderStatus, createdAt(sort: Desc)])
   @@map("orders")
 }
 

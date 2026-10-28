@@ -7,13 +7,14 @@ import { Icon } from '@/components/ui/Icon'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorState, StateBlock } from '@/components/ui/StateBlock'
 import { useAuth } from '@/hooks/useAuth'
-import { orderApi } from '@/services/orderApi'
+import { useOrderList } from '@/hooks/useOrderList'
 import { queueApi } from '@/services/queueApi'
 import type { OrderStatus, SafeOrder, SafeQueueEntry } from '@/types'
 import { greetingForNow } from '@/utils/date'
 import { isZero } from '@/utils/money'
 
 const PRIORITY: OrderStatus[] = ['PRINTING', 'QUEUED', 'PAYMENT_CONFIRMED', 'PLACED']
+const ACTIVE_ORDER_PARAMS = { status: PRIORITY, limit: 20 }
 
 function pickActiveOrder(orders: SafeOrder[]): SafeOrder | null {
   for (const status of PRIORITY) {
@@ -26,22 +27,10 @@ function pickActiveOrder(orders: SafeOrder[]): SafeOrder | null {
 export function DashboardPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const [orders, setOrders] = useState<SafeOrder[] | null>(null)
   const [queue, setQueue] = useState<SafeQueueEntry | null>(null)
-  const [error, setError] = useState<unknown>(null)
-
-  async function load() {
-    setError(null)
-    try {
-      setOrders(await orderApi.list())
-    } catch (err) {
-      setError(err)
-    }
-  }
-
-  useEffect(() => {
-    void load()
-  }, [])
+  // Only the orders that can be "active" are fetched, newest first.
+  const { data, error, reload: load } = useOrderList(ACTIVE_ORDER_PARAMS)
+  const orders = data?.orders ?? null
 
   const activeOrder = useMemo(() => (orders ? pickActiveOrder(orders) : null), [orders])
 

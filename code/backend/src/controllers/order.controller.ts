@@ -3,8 +3,9 @@ import { Response } from 'express';
 import * as orderService from '../services/order.service';
 import { AuthenticatedRequest } from '../types/auth.types';
 import { asyncHandler } from '../utils/asyncHandler';
-import { UnauthorizedError } from '../utils/errors';
+import { UnauthorizedError, ValidationError } from '../utils/errors';
 import { IDEMPOTENCY_KEY_HEADER, parseIdempotencyKey } from '../utils/idempotency';
+import { parseDateParam, parseOrderListQuery } from '../utils/orderListQuery';
 
 function requireUserId(req: AuthenticatedRequest): string {
   if (!req.user) {
@@ -41,8 +42,21 @@ export const create = asyncHandler(async (req: AuthenticatedRequest, res: Respon
 export const list = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const userId = requireUserId(req);
   const role = req.user!.role;
-  const orders = await orderService.listOrdersForRequester(userId, role);
-  res.status(200).json({ success: true, data: { orders } });
+  const query = parseOrderListQuery(req.query);
+  const { orders, pagination } = await orderService.listOrdersForRequester(userId, role, query);
+  res.status(200).json({ success: true, data: { orders, pagination } });
+});
+
+// ADMIN only (see order.routes.ts). `from` is the start of "today" in the
+// admin's own timezone, which only the browser knows, so the client sends it.
+export const summary = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const raw = req.query.from;
+  const from = parseDateParam('from', typeof raw === 'string' ? raw : undefined);
+  if (!from) {
+    throw new ValidationError('from is required');
+  }
+  const data = await orderService.getOrderSummary(from);
+  res.status(200).json({ success: true, data });
 });
 
 export const getOne = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {

@@ -5,14 +5,17 @@ import { Card } from '@/components/ui/Card'
 import { RefundStatusBadge } from '@/components/ui/Badge'
 import { SkeletonCardList } from '@/components/ui/Skeleton'
 import { ErrorState, StateBlock } from '@/components/ui/StateBlock'
+import { Pager } from '@/components/ui/Pager'
 import { PageHeader } from '@/layouts/AppShell'
 import { useToast } from '@/hooks/useToast'
 import { orderApi } from '@/services/orderApi'
 import { refundApi } from '@/services/refundApi'
-import type { SafeOrder, SafeRefund } from '@/types'
+import type { Pagination, SafeOrder, SafeRefund } from '@/types'
 import { ApiError } from '@/types/api'
 import { formatDateTime } from '@/utils/date'
 import { formatMoney, isZero } from '@/utils/money'
+
+const PAGE_SIZE = 20
 
 interface RefundRow {
   order: SafeOrder
@@ -24,16 +27,19 @@ export function AdminRefundsPage() {
   const [rows, setRows] = useState<RefundRow[] | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [pagination, setPagination] = useState<Pagination | null>(null)
 
   async function load() {
     setError(null)
     try {
-      const orders = await orderApi.list()
+      const { orders, pagination: pageInfo } = await orderApi.list({ status: ['CANCELLED'], page, limit: PAGE_SIZE })
+      setPagination(pageInfo)
       // No dedicated "list all refunds" endpoint exists - refunds are only
       // ever readable per-order (GET /orders/:id/refund). Cancelled, paid
       // orders are the only ones that could ever have one, so that's the
       // full candidate set; a 404 just means no refund was ever requested.
-      const candidates = orders.filter((o) => o.orderStatus === 'CANCELLED' && !isZero(o.totalAmount))
+      const candidates = orders.filter((o) => !isZero(o.totalAmount))
       // getForOrder resolves null for "no refund"; a genuine failure rejects
       // and lands in the catch below (the page's error state), rather than
       // silently dropping the row.
@@ -51,7 +57,14 @@ export function AdminRefundsPage() {
 
   useEffect(() => {
     void load()
-  }, [])
+    // load() reads `page`, so the effect is keyed on it.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [page])
+
+  function changePage(next: number) {
+    setRows(null)
+    setPage(next)
+  }
 
   async function handleProcess(orderId: string) {
     setBusyId(orderId)
@@ -101,6 +114,9 @@ export function AdminRefundsPage() {
             </Card>
           ))}
         </div>
+      )}
+      {pagination && (rows !== null || error !== null) && (
+        <Pager page={pagination.page} totalPages={pagination.totalPages} total={pagination.total} onPageChange={changePage} />
       )}
     </div>
   )
