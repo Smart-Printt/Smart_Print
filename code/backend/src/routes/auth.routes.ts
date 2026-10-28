@@ -24,6 +24,9 @@ authRouter.post('/reset-password', authController.resetPassword);
 
 // Requires a valid JWT.
 authRouter.get('/me', authenticate, authController.me);
+authRouter.patch('/me', authenticate, authController.updateMe);
+// The per-user attempt limit is applied in app.ts, ahead of this router.
+authRouter.post('/change-password', authenticate, authController.changePassword);
 
 // ADMIN-only administrative workflow for creating SHOP_STAFF accounts.
 // Deliberately not public - see createShopStaff in auth.controller.ts.

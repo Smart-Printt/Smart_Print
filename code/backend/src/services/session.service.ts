@@ -35,7 +35,10 @@ export async function issueRefreshToken(userId: string, familyId: string = rando
   const rawToken = generateRawResetToken();
   const expiresAt = newExpiry();
   await db.refreshToken.create({
-    data: { userId, tokenHash: hashResetToken(rawToken), familyId, expiresAt },
+    // createdAt comes from the app clock, like users.password_changed_at it is
+    // compared with, so a database clock a few ms behind cannot reject a
+    // session that was just issued.
+    data: { userId, tokenHash: hashResetToken(rawToken), familyId, expiresAt, createdAt: new Date() },
   });
   return { rawToken, expiresAt };
 }

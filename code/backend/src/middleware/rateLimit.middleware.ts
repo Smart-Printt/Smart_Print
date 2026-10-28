@@ -14,6 +14,7 @@ const MESSAGES: Record<RateLimitName, string> = {
   register: 'Too many registration attempts. Please try again later.',
   forgotPassword: 'Too many password reset requests. Please try again later.',
   resetPassword: 'Too many password reset attempts. Please try again later.',
+  changePassword: 'Too many password change attempts. Please try again later.',
   upload: 'Too many uploads. Please try again later.',
 };
 
@@ -114,6 +115,7 @@ export function createRateLimiters(config: RateLimitConfig): RateLimiters {
       register: passThrough,
       forgotPassword: passThrough,
       resetPassword: passThrough,
+      changePassword: passThrough,
       upload: passThrough,
     };
   }
@@ -125,6 +127,9 @@ export function createRateLimiters(config: RateLimitConfig): RateLimiters {
     register: buildLimiter('register', config.register, clientIpKey),
     forgotPassword: buildLimiter('forgotPassword', config.forgotPassword, ipAndEmailKey),
     resetPassword: buildLimiter('resetPassword', config.resetPassword, clientIpKey),
+    // Per user, failed and successful attempts alike: the current password is
+    // checked here, so a stolen access token must not allow guessing it.
+    changePassword: buildLimiter('changePassword', config.changePassword, userKey),
     upload: buildLimiter('upload', config.upload, userKey),
   };
 }
