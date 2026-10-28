@@ -9,13 +9,14 @@ import { PageHeader } from '@/layouts/AppShell'
 import { orderApi } from '@/services/orderApi'
 import { shopApi } from '@/services/shopApi'
 import { shopQueueApi } from '@/services/shopQueueApi'
-import type { SafeOrder, SafeShop } from '@/types'
+import type { SafeShop } from '@/types'
 import { formatMoney } from '@/utils/money'
 
-function isToday(iso: string): boolean {
-  const d = new Date(iso)
-  const now = new Date()
-  return d.toDateString() === now.toDateString()
+// Midnight at the start of today in the admin's own timezone.
+function startOfToday(): string {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString()
 }
 
 interface Metrics {
@@ -33,7 +34,9 @@ export function AdminOverviewPage() {
   async function load() {
     setError(null)
     try {
-      const [shops, orders] = await Promise.all([shopApi.list(), orderApi.list()])
+      // The server counts today's orders and sums revenue, so the overview
+      // never downloads the orders themselves.
+      const [shops, summary] = await Promise.all([shopApi.list(), orderApi.summary(startOfToday())])
       const queueCounts = await Promise.all(
         shops.map(async (shop: SafeShop) => {
           const [waiting, current] = await Promise.all([
@@ -44,16 +47,11 @@ export function AdminOverviewPage() {
         }),
       )
 
-      const todayOrders = orders.filter((o: SafeOrder) => isToday(o.createdAt))
-      const revenueToday = todayOrders
-        .filter((o) => o.orderStatus !== 'CANCELLED' && o.orderStatus !== 'PLACED')
-        .reduce((sum, o) => sum + Number(o.totalAmount), 0)
-
       setMetrics({
         activeShops: shops.filter((s) => s.isActive).length,
         totalShops: shops.length,
-        ordersToday: todayOrders.length,
-        revenueToday,
+        ordersToday: summary.orderCount,
+        revenueToday: Number(summary.revenue),
         ordersInQueue: queueCounts.reduce((a, b) => a + b, 0),
       })
     } catch (err) {

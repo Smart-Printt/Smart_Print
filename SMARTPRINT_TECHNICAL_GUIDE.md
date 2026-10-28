@@ -212,7 +212,8 @@ Backend endpoint: various, gated by `requireRole('ADMIN')`.
 | GET | `/api/documents/:id/download` | Download | Yes | owner/staff-of-shop/admin | `download` |
 | DELETE | `/api/documents/:id` | Delete (if not on an order) | Yes | owner | `remove` |
 | POST | `/api/orders` | Create order | Yes | STUDENT/FACULTY | `order.controller.create` → `order.service.createOrder` |
-| GET | `/api/orders` | List orders (role-scoped) | Yes | any | `list` → `listOrdersForRequester` |
+| GET | `/api/orders` | List orders, role-scoped, one page at a time. Query: `page` (default 1), `limit` (default 20, max 100), `status` (comma-separated), `from`, `to`, `shopId`, `q` (order code). Returns `{ orders, pagination: { page, limit, total, totalPages } }` | Yes | any | `list` → `listOrdersForRequester` |
+| GET | `/api/orders/summary` | Order count and revenue since `from` (admin dashboard) | Yes | ADMIN | `summary` → `getOrderSummary` |
 | GET | `/api/orders/:id` | Get one order | Yes | owner/staff-of-shop/admin | `getOne` |
 | PATCH | `/api/orders/:id/cancel` | Cancel order | Yes | owner | `cancel` |
 | POST | `/api/orders/:orderId/payment` | Initiate payment | Yes | owner | `payment.controller.initiate` → `initiatePayment` |

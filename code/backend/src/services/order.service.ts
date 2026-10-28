@@ -12,11 +12,14 @@ import * as shopService from './shop.service';
 import {
   CreateOrderInput,
   CreateOrderItemInput,
+  OrderSummary,
+  PaginatedOrders,
   SafeOrder,
   SafeOrderItem,
   SafeOrderStatusEvent,
 } from '../types/order.types';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
+import { OrderListQuery } from '../utils/orderListQuery';
 import { hashCreateOrderRequest } from '../utils/idempotency';
 import { generateOrderCode } from '../utils/orderCode';
 
@@ -357,13 +360,60 @@ export async function createOrder(
   return { order: toSafeOrder(created), replayed: false };
 }
 
-export async function listOrdersForUser(userId: string): Promise<SafeOrder[]> {
-  const orders = await prisma.order.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-    include: ORDER_INCLUDE,
-  });
-  return orders.map(toSafeOrder);
+// One page of orders matching `query`, restricted to what `scope` allows.
+// Newest first; orderId breaks ties so a page never repeats or skips a row
+// when several orders share a timestamp.
+async function findOrderPage(scope: Prisma.OrderWhereInput, query: OrderListQuery): Promise<PaginatedOrders> {
+  const filters: Prisma.OrderWhereInput = {};
+  if (query.statuses.length > 0) {
+    filters.orderStatus = { in: query.statuses };
+  }
+  if (query.from || query.to) {
+    filters.createdAt = { ...(query.from && { gte: query.from }), ...(query.to && { lte: query.to }) };
+  }
+  if (query.shopId) {
+    filters.shopId = query.shopId;
+  }
+  if (query.search) {
+    filters.orderCode = { contains: query.search, mode: 'insensitive' };
+  }
+
+  // The scope (whose orders the caller may see) and the caller's filters are
+  // combined with AND, so a filter can only ever narrow what the caller can
+  // see, never widen it.
+  const where: Prisma.OrderWhereInput = { AND: [scope, filters] };
+
+  const [total, rows] = await Promise.all([
+    prisma.order.count({ where }),
+    prisma.order.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { orderId: 'desc' }],
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      include: ORDER_INCLUDE,
+    }),
+  ]);
+
+  return {
+    orders: rows.map(toSafeOrder),
+    pagination: {
+      page: query.page,
+      limit: query.limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / query.limit)),
+    },
+  };
+}
+
+function emptyPage(query: OrderListQuery): PaginatedOrders {
+  return {
+    orders: [],
+    pagination: { page: query.page, limit: query.limit, total: 0, totalPages: 1 },
+  };
+}
+
+export async function listOrdersForUser(userId: string, query: OrderListQuery): Promise<PaginatedOrders> {
+  return findOrderPage({ userId }, query);
 }
 
 // Role-scoped order visibility for GET /api/orders, mirroring the same
@@ -371,29 +421,38 @@ export async function listOrdersForUser(userId: string): Promise<SafeOrder[]> {
 // orders only) pattern already used by queue.service.ts::getQueueEntryForOrder.
 // A SHOP_STAFF caller who is inactive or has no shop assignment sees an
 // empty list rather than an error, matching how they'd see no queue at all.
-export async function listOrdersForRequester(userId: string, role: UserRole): Promise<SafeOrder[]> {
+export async function listOrdersForRequester(
+  userId: string,
+  role: UserRole,
+  query: OrderListQuery,
+): Promise<PaginatedOrders> {
   if (role === 'ADMIN') {
-    const orders = await prisma.order.findMany({
-      orderBy: { createdAt: 'desc' },
-      include: ORDER_INCLUDE,
-    });
-    return orders.map(toSafeOrder);
+    return findOrderPage({}, query);
   }
 
   if (role === 'SHOP_STAFF') {
     const staffUser = await prisma.user.findUnique({ where: { userId } });
     if (!staffUser || staffUser.status !== 'ACTIVE' || !staffUser.shopId) {
-      return [];
+      return emptyPage(query);
     }
-    const orders = await prisma.order.findMany({
-      where: { shopId: staffUser.shopId },
-      orderBy: { createdAt: 'desc' },
-      include: ORDER_INCLUDE,
-    });
-    return orders.map(toSafeOrder);
+    return findOrderPage({ shopId: staffUser.shopId }, query);
   }
 
-  return listOrdersForUser(userId);
+  return listOrdersForUser(userId, query);
+}
+
+// Order count and revenue since `from`, for the admin overview. Computed by
+// the database so the dashboard does not have to download every order.
+// Revenue ignores cancelled orders and orders that are not paid yet.
+export async function getOrderSummary(from: Date): Promise<OrderSummary> {
+  const [orderCount, revenue] = await Promise.all([
+    prisma.order.count({ where: { createdAt: { gte: from } } }),
+    prisma.order.aggregate({
+      where: { createdAt: { gte: from }, orderStatus: { notIn: ['CANCELLED', 'PLACED'] } },
+      _sum: { totalAmount: true },
+    }),
+  ]);
+  return { orderCount, revenue: (revenue._sum.totalAmount ?? new Prisma.Decimal(0)).toString() };
 }
 
 // Role-scoped single-order lookup for GET /api/orders/:id, same pattern as
