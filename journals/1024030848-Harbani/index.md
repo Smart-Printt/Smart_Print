@@ -11,4 +11,6 @@ Name: Harbani Kaur
    Own Machine](./w3-prototype-report-and-local-setup.md)
 +  [W4: The Ghost Migration, the Dead Frontend, and Deleting My Own
    Code](./w4-ghost-migration-and-dead-frontend.md)
++  [W5: CI, Real Logout, Profile Editing, and Pagination That Does Not Trust
+   the Browser](./w5-ci-sessions-profile-and-pagination.md)
 +  […]
