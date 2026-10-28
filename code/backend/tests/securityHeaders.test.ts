@@ -38,7 +38,9 @@ describe('CORS allowlist', () => {
     const res = await request(app).get('/health').set('Origin', ALLOWED_ORIGIN);
     expect(res.status).toBe(200);
     expect(res.headers['access-control-allow-origin']).toBe(ALLOWED_ORIGIN);
-    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+    // Credentials are allowed so the httpOnly refresh cookie reaches the API;
+    // only the exact origins on the list ever get this header.
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
   });
 
   it('answers a preflight from an allowed origin', async () => {

@@ -2,6 +2,7 @@ import cors from 'cors';
 import { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import { ForbiddenError } from '../utils/errors';
+import { CLIENT_HEADER } from './clientHeader.middleware';
 
 // Exact-origin CORS allowlist (see config/security.ts for how the list is
 // built and validated).
@@ -30,9 +31,10 @@ export function createCorsMiddleware(allowedOrigins: string[]): RequestHandler[]
 
   const corsHandler = cors({
     origin: [...allowed],
-    credentials: false,
+    // The refresh cookie must travel with requests from an allowed origin.
+    credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', CLIENT_HEADER],
     exposedHeaders: [
       'Content-Disposition',
       'Idempotent-Replayed',

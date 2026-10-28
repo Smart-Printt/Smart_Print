@@ -135,6 +135,7 @@ model User {
   orders              Order[]
   orderStatusChanges  OrderStatusHistory[] @relation("OrderStatusChangedBy")
   passwordResetTokens PasswordResetToken[]
+  refreshTokens       RefreshToken[]
 
   @@index([email])
   @@index([shopId])
@@ -159,6 +160,26 @@ model PasswordResetToken {
   @@index([userId])
   @@index([expiresAt])
   @@map("password_reset_tokens")
+}
+
+model RefreshToken {
+  tokenId   String    @id @default(uuid()) @map("token_id")
+  userId    String    @map("user_id")
+  // Only the SHA-256 of the token is stored, never the token itself.
+  tokenHash String    @unique @map("token_hash")
+  // All tokens descended from one login share a family, so reuse of an
+  // already-rotated token can revoke the whole chain.
+  familyId  String    @map("family_id")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 model Document {

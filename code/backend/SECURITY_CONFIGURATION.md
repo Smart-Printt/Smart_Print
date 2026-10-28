@@ -60,7 +60,8 @@ operation unless `NODE_ENV` is `development` or `test`.
 - Requests without an `Origin` header (curl, health checks, server-to-server
   calls) are allowed. Browsers always send `Origin` on cross-origin requests,
   and protected routes still require a bearer token.
-- No cookies are used, so credentials are not enabled.
+- Credentials are enabled (only for the listed origins) because the login
+  session lives in an httpOnly refresh cookie - see "Sessions" below.
 
 Example:
 
@@ -75,6 +76,27 @@ Helmet is applied to every response with its defaults, including
 `X-Frame-Options: SAMEORIGIN`, `Strict-Transport-Security`,
 `Referrer-Policy: no-referrer` and `Cross-Origin-Resource-Policy`, and
 `X-Powered-By` is removed.
+
+## Sessions
+
+- **Access token:** a JWT valid for `JWT_EXPIRES_IN` (default 15 minutes), sent
+  as `Authorization: Bearer`. Every request also re-checks the account in the
+  database, so a deactivated or deleted user, or a token issued before a
+  password change, is refused immediately.
+- **Refresh token:** a random 256-bit value in an httpOnly cookie named
+  `smartprint_refresh`, limited to `/api/auth`, valid `REFRESH_TOKEN_TTL_DAYS`
+  (default 7). Only its SHA-256 is stored (table `refresh_tokens`).
+- `POST /api/auth/refresh` swaps the cookie for a new access token and
+  rotates the cookie. Replaying an already-rotated token (outside a 10 second
+  grace window for two tabs refreshing at once) revokes the whole chain.
+- `POST /api/auth/logout` revokes the cookie's token and clears it.
+  A password reset revokes every session of that user
+  (`revokeUserSessions` in `session.service.ts`).
+- `refresh` and `logout` require the header `X-SmartPrint-Client: web`, so a
+  page on another site cannot use the cookie.
+- `REFRESH_COOKIE_SAMESITE` is `lax` (default), `strict` or `none`. `none`
+  is only for a frontend on a different site and forces the `Secure` flag.
+  The cookie is always `Secure` in production, so production needs HTTPS.
 
 ## Rate limits
 
