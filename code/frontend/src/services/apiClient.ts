@@ -31,10 +31,52 @@ interface RequestOptions {
   headers?: Record<string, string>
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+// Sent on every call; the backend requires it on the cookie-based auth
+// endpoints (refresh, logout) so other websites cannot use the cookie.
+const CLIENT_HEADERS = { 'X-SmartPrint-Client': 'web' }
+
+// Auth endpoints answer 401 for reasons a refresh cannot fix (wrong password,
+// no session), so they never trigger one.
+const NO_REFRESH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout']
+
+let refreshInFlight: Promise<boolean> | null = null
+
+// Trades the httpOnly refresh cookie for a new access token. One refresh runs
+// at a time: a page that fires several requests as the token expires shares a
+// single refresh instead of racing with its own rotation.
+function refreshAccessToken(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const response = await fetch(`${BASE_URL}/auth/refresh`, {
+          method: 'POST',
+          headers: CLIENT_HEADERS,
+          credentials: 'include',
+        })
+        if (!response.ok) {
+          return false
+        }
+        const payload = (await response.json()) as { data?: { token?: string } }
+        const token = payload.data?.token
+        if (!token) {
+          return false
+        }
+        setToken(token)
+        return true
+      } catch {
+        return false
+      }
+    })().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
+function sendRequest(path: string, options: RequestOptions): Promise<Response> {
   const { method = 'GET', body, isFormData, signal, headers: extraHeaders } = options
 
-  const headers: Record<string, string> = { ...extraHeaders }
+  const headers: Record<string, string> = { ...CLIENT_HEADERS, ...extraHeaders }
   const token = getToken()
   if (token) {
     headers.Authorization = `Bearer ${token}`
@@ -43,17 +85,37 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     headers['Content-Type'] = 'application/json'
   }
 
+  return fetch(`${BASE_URL}${path}`, {
+    method,
+    headers,
+    credentials: 'include',
+    body: isFormData ? (body as FormData) : body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
+  })
+}
+
+// Sends the request; if the access token has expired, refreshes it once and
+// retries. Returns the final response, or throws a network ApiError.
+async function sendWithRefresh(path: string, options: RequestOptions): Promise<Response> {
   let response: Response
   try {
-    response = await fetch(`${BASE_URL}${path}`, {
-      method,
-      headers,
-      body: isFormData ? (body as FormData) : body !== undefined ? JSON.stringify(body) : undefined,
-      signal,
-    })
+    response = await sendRequest(path, options)
   } catch {
     throw new ApiError(0, 'Connection lost. Please check your network and try again.')
   }
+
+  if (response.status === 401 && !NO_REFRESH_PATHS.includes(path) && (await refreshAccessToken())) {
+    try {
+      response = await sendRequest(path, options)
+    } catch {
+      throw new ApiError(0, 'Connection lost. Please check your network and try again.')
+    }
+  }
+  return response
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const response = await sendWithRefresh(path, options)
 
   if (response.status === 204) {
     return undefined as T
@@ -102,10 +164,7 @@ export function downloadUrl(path: string): string {
 }
 
 export async function fetchAuthorizedBlob(path: string): Promise<Blob> {
-  const token = getToken()
-  const response = await fetch(`${BASE_URL}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
+  const response = await sendWithRefresh(path, {})
   if (!response.ok) {
     throw new ApiError(response.status, 'Could not download this file.')
   }

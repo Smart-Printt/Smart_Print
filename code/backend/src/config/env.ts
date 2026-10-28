@@ -22,7 +22,16 @@ export const env = {
   port: Number(process.env.PORT ?? 4000),
   databaseUrl: required('DATABASE_URL'),
   jwtSecret: required('JWT_SECRET'),
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '1d',
+  // Access tokens are short-lived; a long-lived refresh token (below) gets a
+  // new one without asking for the password again.
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '15m',
+  refreshToken: {
+    ttlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS ?? 7),
+    // Lax is right when the frontend and API share a site (the Vite proxy in
+    // development, or one domain in production). Use "none" only for a
+    // frontend on a different site; it requires HTTPS.
+    cookieSameSite: (process.env.REFRESH_COOKIE_SAMESITE ?? 'lax').toLowerCase() as 'lax' | 'strict' | 'none',
+  },
   allowedStudentEmailDomain: (
     process.env.ALLOWED_STUDENT_EMAIL_DOMAIN ?? 'thapar.edu'
   ).toLowerCase(),

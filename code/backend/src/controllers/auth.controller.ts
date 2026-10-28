@@ -1,20 +1,47 @@
 import { Response } from 'express';
 
 import * as authService from '../services/auth.service';
+import * as sessionService from '../services/session.service';
 import { AuthenticatedRequest } from '../types/auth.types';
 import { asyncHandler } from '../utils/asyncHandler';
 import { UnauthorizedError } from '../utils/errors';
+import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../utils/refreshCookie';
 
 export const register = asyncHandler(async (req, res: Response) => {
   const { name, email, phone, password } = req.body ?? {};
-  const result = await authService.registerStudent({ name, email, phone, password });
+  const { refresh, ...result } = await authService.registerStudent({ name, email, phone, password });
+  setRefreshCookie(res, refresh.rawToken, refresh.expiresAt);
   res.status(201).json({ success: true, data: result });
 });
 
 export const login = asyncHandler(async (req, res: Response) => {
   const { email, password } = req.body ?? {};
-  const result = await authService.login({ email, password });
+  const { refresh, ...result } = await authService.login({ email, password });
+  setRefreshCookie(res, refresh.rawToken, refresh.expiresAt);
   res.status(200).json({ success: true, data: result });
+});
+
+// Trades the httpOnly refresh cookie for a new short-lived access token and a
+// rotated cookie. Any failure clears the cookie so the client stops retrying.
+export const refresh = asyncHandler(async (req, res: Response) => {
+  const rawToken = readRefreshCookie(req);
+  if (!rawToken) {
+    throw new UnauthorizedError('No active session');
+  }
+  try {
+    const session = await sessionService.refreshSession(rawToken);
+    const user = await authService.getSafeUserById(session.userId);
+    if (!user) {
+      throw new UnauthorizedError('User no longer exists');
+    }
+    setRefreshCookie(res, session.rawToken, session.expiresAt);
+    res.status(200).json({ success: true, data: { user, token: session.accessToken } });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      clearRefreshCookie(res);
+    }
+    throw err;
+  }
 });
 
 // Always returns the same generic message, whether or not the email
@@ -46,15 +73,15 @@ export const me = asyncHandler(async (req: AuthenticatedRequest, res: Response) 
   res.status(200).json({ success: true, data: { user } });
 });
 
-// Stateless JWTs are not stored server-side, so there is nothing to
-// invalidate here. This endpoint exists purely so clients have a
-// conventional place to call; the actual "logout" is the client discarding
-// its token. Do not treat this as server-side token revocation.
-export const logout = asyncHandler(async (_req, res: Response) => {
-  res.status(200).json({
-    success: true,
-    message: 'Logged out. Discard the JWT on the client; it is not revoked server-side.',
-  });
+// Revokes this browser's refresh token and clears the cookie. The short-lived
+// access token the client still holds simply expires; the client discards it.
+export const logout = asyncHandler(async (req, res: Response) => {
+  const rawToken = readRefreshCookie(req);
+  if (rawToken) {
+    await sessionService.revokeRefreshToken(rawToken);
+  }
+  clearRefreshCookie(res);
+  res.status(200).json({ success: true, message: 'Logged out.' });
 });
 
 // ADMIN-only. Creates a SHOP_STAFF account. Not reachable without a valid

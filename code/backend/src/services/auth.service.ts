@@ -1,6 +1,7 @@
 import { env } from '../config/env';
 import { prisma } from '../config/prisma';
 import { emailService } from './email';
+import { IssuedRefreshToken, issueRefreshToken, revokeUserSessions } from './session.service';
 import { buildPasswordResetEmail } from './email/passwordResetEmail';
 import { SafeUser } from '../types/auth.types';
 import { ConflictError, UnauthorizedError, ValidationError } from '../utils/errors';
@@ -35,10 +36,17 @@ export interface AuthResult {
   token: string;
 }
 
+// What register/login return internally. The controller sends `user` and
+// `token` in the JSON body and puts `refresh` in an httpOnly cookie - the
+// refresh token never appears in a response body.
+export interface AuthSession extends AuthResult {
+  refresh: IssuedRefreshToken;
+}
+
 // Public registration always creates a STUDENT with ACTIVE status. Any
 // role/status/password_hash/user_id fields submitted by the client are
 // ignored entirely - they are never read from the input object.
-export async function registerStudent(input: RegisterStudentInput): Promise<AuthResult> {
+export async function registerStudent(input: RegisterStudentInput): Promise<AuthSession> {
   assertValidName(input.name);
   assertValidEmailInput(input.email);
   assertValidPhone(input.phone);
@@ -72,14 +80,15 @@ export async function registerStudent(input: RegisterStudentInput): Promise<Auth
   });
 
   const token = signAccessToken({ userId: user.userId, role: user.role });
+  const refresh = await issueRefreshToken(user.userId);
 
-  return { user: toSafeUser(user), token };
+  return { user: toSafeUser(user), token, refresh };
 }
 
 // Deliberately vague on failure ("Invalid email or password") to avoid
 // leaking which part of the credential was wrong or whether the account
 // exists at all.
-export async function login(input: LoginInput): Promise<AuthResult> {
+export async function login(input: LoginInput): Promise<AuthSession> {
   assertValidEmailInput(input.email);
   assertValidPasswordInput(input.password);
 
@@ -101,8 +110,9 @@ export async function login(input: LoginInput): Promise<AuthResult> {
   }
 
   const token = signAccessToken({ userId: user.userId, role: user.role });
+  const refresh = await issueRefreshToken(user.userId);
 
-  return { user: toSafeUser(user), token };
+  return { user: toSafeUser(user), token, refresh };
 }
 
 export async function getSafeUserById(userId: string): Promise<SafeUser | null> {
@@ -329,6 +339,8 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
       where: { userId: resetToken.userId },
       data: { passwordHash, passwordChangedAt: new Date() },
     });
+    // Anyone holding the old password (or a stolen session) is signed out.
+    await revokeUserSessions(resetToken.userId, tx);
 
     // Defensive cleanup: any other still-unused token for this user (e.g.
     // one left over from a request that failed to invalidate correctly) is

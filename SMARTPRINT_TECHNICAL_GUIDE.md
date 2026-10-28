@@ -539,7 +539,7 @@ async confirmPayment(params) {
 | `PORT` | Port the Express server listens on (currently `4321` in this setup) |
 | `NODE_ENV` | `development` / `production` — gates things like dev-console email fallback and `simulateOutcome` |
 | `JWT_SECRET` | Signing key for JWTs — must be kept private; anyone with it could forge valid tokens |
-| `JWT_EXPIRES_IN` | Token lifetime (e.g. `1d`) |
+| `JWT_EXPIRES_IN` | Access token lifetime (default `15m`); see also `REFRESH_TOKEN_TTL_DAYS`, `REFRESH_COOKIE_SAMESITE` |
 | `ALLOWED_STUDENT_EMAIL_DOMAIN` | Restricts public self-registration to a specific email domain |
 | `UPLOAD_DIR`, `MAX_FILE_SIZE_MB` | Document upload configuration |
 | `FRONTEND_URL` | Used to build the password-reset link |
@@ -787,7 +787,7 @@ Short: Use Case, Class, Activity, Swimlane, DFD Levels 0/1/2 (see §22 for mappi
 
 20. **T: "Could you swap PostgreSQL for MySQL?"** → **A: "Reasonably easily — Prisma abstracts most of the SQL dialect differences; I'd change the `provider` in `schema.prisma`'s `datasource` block and re-run migrations. A few Postgres-specific raw queries (`FOR UPDATE` row locks) are actually standard SQL too, so they'd likely still work."**
 
-21. **T: "Why is `logout` just a no-op?"** → **A: "JWTs are stateless — nothing is stored server-side to revoke. 'Logging out' is really just the client discarding its token; the endpoint exists for a conventional API shape, not real server-side invalidation."**
+21. **T: "How does `logout` work?"** → **A: "Access tokens are short-lived (15 minutes) and stateless. The login session is a separate refresh token, stored hashed in the database and sent as an httpOnly cookie. Logout revokes that refresh token and clears the cookie; the access token the browser still holds just expires."**
 
 22. **T: "What if I try to cancel an order that's already printing?"** → **A: "Blocked — `CANCELLABLE_ORDER_STATUSES` only includes PLACED/PAYMENT_CONFIRMED/QUEUED; a PRINTING order returns a 409 Conflict explaining printing may have already started."**
 

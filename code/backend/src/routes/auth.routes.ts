@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import * as authController from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { requireClientHeader } from '../middleware/clientHeader.middleware';
 import { requireRole } from '../middleware/role.middleware';
 
 export const authRouter = Router();
@@ -9,7 +10,10 @@ export const authRouter = Router();
 // Public - always creates role=STUDENT, status=ACTIVE. See auth.service.ts.
 authRouter.post('/register', authController.register);
 authRouter.post('/login', authController.login);
-authRouter.post('/logout', authController.logout);
+// Cookie-based, so both need the custom client header (see
+// clientHeader.middleware.ts).
+authRouter.post('/refresh', requireClientHeader, authController.refresh);
+authRouter.post('/logout', requireClientHeader, authController.logout);
 
 // Public. Always responds with the same generic message - see
 // auth.controller.ts/auth.service.ts for the email-enumeration defense.
