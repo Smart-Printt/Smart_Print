@@ -325,7 +325,10 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
     }
 
     // Only the password changes - never the role, status, email or shop.
-    await tx.user.update({ where: { userId: resetToken.userId }, data: { passwordHash } });
+    await tx.user.update({
+      where: { userId: resetToken.userId },
+      data: { passwordHash, passwordChangedAt: new Date() },
+    });
 
     // Defensive cleanup: any other still-unused token for this user (e.g.
     // one left over from a request that failed to invalidate correctly) is

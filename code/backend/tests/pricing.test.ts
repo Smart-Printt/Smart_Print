@@ -467,7 +467,9 @@ describe('PATCH /api/shops/:shopId/pricing-rules/:ruleId/deactivate', () => {
     const res = await request(app)
       .patch(`/api/shops/${shop.shopId}/pricing-rules/${ruleId}/deactivate`)
       .set('Authorization', `Bearer ${admin.token}`)
-      .send({});
+      // An explicit past date: the default ("now") is still inclusive-effective
+      // when the response is built within the same millisecond.
+      .send({ effectiveTo: new Date(Date.now() - 1000).toISOString() });
 
     expect(res.status).toBe(200);
     expect(res.body.data.pricingRule.isCurrentlyEffective).toBe(false);
