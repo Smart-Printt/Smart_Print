@@ -21,6 +21,18 @@ export const authApi = {
     return res.data.user
   },
 
+  async updateProfile(input: { name?: string; phone?: string }) {
+    const res = await api.patch<ApiSuccess<{ user: SafeUser }>>('/auth/me', input)
+    return res.data.user
+  },
+
+  // Signs out every other device. The response carries a fresh token for
+  // this one, which the caller must store.
+  async changePassword(input: { currentPassword: string; newPassword: string; confirmPassword: string }) {
+    const res = await api.post<ApiSuccess<AuthResult>>('/auth/change-password', input)
+    return res.data
+  },
+
   async createFaculty(input: { name: string; email: string; phone?: string; password: string }) {
     const res = await api.post<ApiSuccess<{ user: SafeUser }>>('/auth/faculty', input)
     return res.data.user

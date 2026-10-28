@@ -84,6 +84,32 @@ export const logout = asyncHandler(async (req, res: Response) => {
   res.status(200).json({ success: true, message: 'Logged out.' });
 });
 
+// Edits the caller's own name and phone only.
+export const updateMe = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw new UnauthorizedError();
+  }
+  const { name, phone } = req.body ?? {};
+  const user = await authService.updateProfile(req.user.userId, { name, phone });
+  res.status(200).json({ success: true, data: { user } });
+});
+
+// Returns a fresh access token and sets a fresh refresh cookie for this
+// device; every other session of the user has been revoked.
+export const changePassword = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    throw new UnauthorizedError();
+  }
+  const { currentPassword, newPassword, confirmPassword } = req.body ?? {};
+  const { refresh, ...result } = await authService.changePassword(req.user.userId, {
+    currentPassword,
+    newPassword,
+    confirmPassword,
+  });
+  setRefreshCookie(res, refresh.rawToken, refresh.expiresAt);
+  res.status(200).json({ success: true, data: result });
+});
+
 // ADMIN-only. Creates a SHOP_STAFF account. Not reachable without a valid
 // ADMIN JWT (see requireRole('ADMIN') on the route) - this is the
 // "authorized administrative workflow" referenced in the auth service, and

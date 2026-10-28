@@ -21,6 +21,7 @@ export const RATE_LIMIT_NAMES = [
   'register',
   'forgotPassword',
   'resetPassword',
+  'changePassword',
   'upload',
 ] as const;
 export type RateLimitName = (typeof RATE_LIMIT_NAMES)[number];
@@ -33,6 +34,7 @@ const RATE_LIMIT_DEFAULTS: Record<RateLimitName, RateLimitRule & { envPrefix: st
   register: { envPrefix: 'REGISTER', max: 20, windowMs: 60 * 60_000 },
   forgotPassword: { envPrefix: 'FORGOT_PASSWORD', max: 3, windowMs: 15 * 60_000 },
   resetPassword: { envPrefix: 'RESET_PASSWORD', max: 10, windowMs: 15 * 60_000 },
+  changePassword: { envPrefix: 'CHANGE_PASSWORD', max: 5, windowMs: 15 * 60_000 },
   upload: { envPrefix: 'UPLOAD', max: 30, windowMs: 10 * 60_000 },
 };
 

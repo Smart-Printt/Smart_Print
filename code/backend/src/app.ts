@@ -56,6 +56,7 @@ export function createApp(options: CreateAppOptions = {}): Application {
   app.post('/api/auth/register', limiters.authIp, limiters.register);
   app.post('/api/auth/forgot-password', limiters.authIp, limiters.forgotPassword);
   app.post('/api/auth/reset-password', limiters.authIp, limiters.resetPassword);
+  app.post('/api/auth/change-password', authenticate, limiters.changePassword);
   // Authenticated so the limit is per user; ahead of multer in
   // documentRouter so a rejected upload is never read into memory.
   app.post('/api/documents', authenticate, limiters.upload);

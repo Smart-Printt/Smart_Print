@@ -107,6 +107,7 @@ Helmet is applied to every response with its defaults, including
 | `REGISTER` | `POST /api/auth/register` | client IP | 20 per hour |
 | `FORGOT_PASSWORD` | `POST /api/auth/forgot-password` | client IP + email | 3 per 15 min |
 | `RESET_PASSWORD` | `POST /api/auth/reset-password` | client IP | 10 per 15 min |
+| `CHANGE_PASSWORD` | `POST /api/auth/change-password` | authenticated user | 5 per 15 min |
 | `UPLOAD` | `POST /api/documents` | authenticated user | 30 per 10 min |
 
 - A blocked request receives

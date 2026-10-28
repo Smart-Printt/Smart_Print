@@ -115,6 +115,84 @@ export async function login(input: LoginInput): Promise<AuthSession> {
   return { user: toSafeUser(user), token, refresh };
 }
 
+export interface UpdateProfileInput {
+  name?: unknown;
+  phone?: unknown;
+}
+
+// Only name and phone are editable here. Email, role, status and shop are
+// never read from the input, so they cannot be changed through this call.
+export async function updateProfile(userId: string, input: UpdateProfileInput): Promise<SafeUser> {
+  const data: { name?: string; phone?: string | null } = {};
+
+  if (input.name !== undefined) {
+    assertValidName(input.name);
+    data.name = input.name.trim();
+  }
+  if (input.phone !== undefined) {
+    assertValidPhone(input.phone);
+    data.phone = input.phone ? input.phone.trim() : null;
+  }
+  if (Object.keys(data).length === 0) {
+    throw new ValidationError('Nothing to update');
+  }
+
+  const user = await prisma.user.update({ where: { userId }, data });
+  return toSafeUser(user);
+}
+
+export interface ChangePasswordInput {
+  currentPassword: unknown;
+  newPassword: unknown;
+  confirmPassword?: unknown;
+}
+
+// Checks the current password, sets the new one, and signs the user out
+// everywhere else: every refresh token is revoked and tokens issued before
+// now stop working. The device that made the change gets a fresh session
+// back, so the user is not logged out of the browser they are using.
+export async function changePassword(userId: string, input: ChangePasswordInput): Promise<AuthSession> {
+  assertValidPasswordInput(input.currentPassword);
+  assertValidPasswordInput(input.newPassword);
+  if (input.confirmPassword !== undefined && input.confirmPassword !== input.newPassword) {
+    throw new ValidationError('Passwords do not match');
+  }
+  validatePasswordPolicy(input.newPassword);
+
+  const user = await prisma.user.findUnique({ where: { userId } });
+  if (!user || user.status !== 'ACTIVE') {
+    throw new UnauthorizedError();
+  }
+
+  // 400 rather than 401: the caller is logged in, they just got a field wrong
+  // (a 401 would make the frontend sign them out).
+  if (!(await comparePassword(input.currentPassword, user.passwordHash))) {
+    throw new ValidationError('Current password is incorrect');
+  }
+  if (input.newPassword === input.currentPassword) {
+    throw new ValidationError('New password must be different from the current password');
+  }
+
+  const passwordHash = await hashPassword(input.newPassword);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const changed = await tx.user.update({
+      where: { userId },
+      data: { passwordHash, passwordChangedAt: new Date() },
+    });
+    await revokeUserSessions(userId, tx);
+    return changed;
+  });
+
+  // Issued after the transaction on purpose: refresh tokens are rejected when
+  // created before passwordChangedAt, and a row created inside the transaction
+  // would carry the transaction's start time.
+  const refresh = await issueRefreshToken(userId);
+  const token = signAccessToken({ userId, role: updated.role });
+
+  return { user: toSafeUser(updated), token, refresh };
+}
+
 export async function getSafeUserById(userId: string): Promise<SafeUser | null> {
   const user = await prisma.user.findUnique({ where: { userId } });
   return user ? toSafeUser(user) : null;
