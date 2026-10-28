@@ -5,6 +5,7 @@ import request from 'supertest';
 import { createApp } from '../src/app';
 import { prisma } from '../src/config/prisma';
 import { signAccessToken } from '../src/utils/jwt';
+import { hashPassword } from '../src/utils/password';
 
 const TEST_EMAIL_PREFIX = 'ratelimittest.';
 const VALID_PASSWORD = 'CorrectHorse123';
@@ -102,10 +103,23 @@ describe('other auth rate limits', () => {
 });
 
 describe('upload rate limit', () => {
-  // authenticate() only verifies the JWT, so no database user is needed for
-  // the limiter itself; the first requests carry no file and stop at 400.
-  const tokenA = signAccessToken({ userId: '00000000-0000-4000-8000-00000000000a', role: 'STUDENT' });
-  const tokenB = signAccessToken({ userId: '00000000-0000-4000-8000-00000000000b', role: 'STUDENT' });
+  // authenticate() looks the user up, so each token needs a real database
+  // user; the first requests carry no file and stop at 400.
+  let tokenA = '';
+  let tokenB = '';
+
+  beforeAll(async () => {
+    const passwordHash = await hashPassword(VALID_PASSWORD);
+    const [userA, userB] = await Promise.all(
+      ['upload-a', 'upload-b'].map((label) =>
+        prisma.user.create({
+          data: { name: 'Upload Limit', email: uniqueEmail(label), passwordHash, role: 'STUDENT' },
+        }),
+      ),
+    );
+    tokenA = signAccessToken({ userId: userA.userId, role: 'STUDENT' });
+    tokenB = signAccessToken({ userId: userB.userId, role: 'STUDENT' });
+  });
 
   it('returns 429 per user once the limit is reached, before the file is processed', async () => {
     const app = createApp({ rateLimit: { enabled: true, upload: { max: 2, windowMs: 60_000 } } });

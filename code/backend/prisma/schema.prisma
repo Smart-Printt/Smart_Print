@@ -109,19 +109,22 @@ enum DocumentFileType {
 // ─────────────────────────────────────────────────────────────────────────
 
 model User {
-  userId       String     @id @default(uuid()) @map("user_id")
-  name         String
-  email        String     @unique
-  phone        String?
-  passwordHash String     @map("password_hash")
-  role         UserRole
-  status       UserStatus @default(ACTIVE)
+  userId            String     @id @default(uuid()) @map("user_id")
+  name              String
+  email             String     @unique
+  phone             String?
+  passwordHash      String     @map("password_hash")
+  // Set whenever the password changes (reset, change-password). The auth
+  // middleware rejects any access token issued before this moment.
+  passwordChangedAt DateTime?  @map("password_changed_at")
+  role              UserRole
+  status            UserStatus @default(ACTIVE)
   // Only ever set for role=SHOP_STAFF - see the CHECK constraint added in
   // the phase8_shop_staff migration (STUDENT/ADMIN rows must keep this
   // null). Nullable rather than required so a SHOP_STAFF account can exist
   // between creation and shop assignment; the admin staff endpoints
   // require it explicitly at creation time (see staff.service.ts).
-  shopId       String?    @map("shop_id")
+  shopId            String?    @map("shop_id")
 
   // onDelete: Restrict - a shop with assigned staff can never be deleted
   // out from under them (staff must be reassigned/unassigned first). This
@@ -208,23 +211,23 @@ model PrintShop {
 }
 
 model Order {
-  orderId         String      @id @default(uuid()) @map("order_id")
-  orderCode       String      @unique @map("order_code")
-  userId          String      @map("user_id")
-  shopId          String      @map("shop_id")
-  orderStatus     OrderStatus @default(PLACED) @map("order_status")
-  totalAmount     Decimal     @map("total_amount") @db.Decimal(10, 2)
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
-  cancelledAt     DateTime?   @map("cancelled_at")
-  cancelledReason String?     @map("cancelled_reason")
+  orderId                String      @id @default(uuid()) @map("order_id")
+  orderCode              String      @unique @map("order_code")
+  userId                 String      @map("user_id")
+  shopId                 String      @map("shop_id")
+  orderStatus            OrderStatus @default(PLACED) @map("order_status")
+  totalAmount            Decimal     @map("total_amount") @db.Decimal(10, 2)
+  createdAt              DateTime    @default(now()) @map("created_at")
+  updatedAt              DateTime    @updatedAt @map("updated_at")
+  cancelledAt            DateTime?   @map("cancelled_at")
+  cancelledReason        String?     @map("cancelled_reason")
   // Order-creation idempotency (see order.service.ts::createOrder). Both are
   // NULL for orders created without an Idempotency-Key header. The key is
   // scoped to the user: the same key from two users is two unrelated keys.
   // requestHash is a SHA-256 of the canonicalised request body, used to
   // reject a key that is reused for a different request.
-  idempotencyKey         String? @map("idempotency_key")
-  idempotencyRequestHash String? @map("idempotency_request_hash")
+  idempotencyKey         String?     @map("idempotency_key")
+  idempotencyRequestHash String?     @map("idempotency_request_hash")
 
   user           User                 @relation(fields: [userId], references: [userId])
   shop           PrintShop            @relation(fields: [shopId], references: [shopId])
@@ -233,10 +236,6 @@ model Order {
   payments       Payment[]
   statusHistory  OrderStatusHistory[]
 
-  @@index([userId])
-  @@index([shopId])
-  @@index([orderStatus])
-  @@index([createdAt])
   // Referenced by queue's composite foreign key (order_id, shop_id) so the
   // database - not just application code - guarantees a queue entry's shop
   // is its order's shop. order_id alone is already unique (the primary
@@ -246,6 +245,10 @@ model Order {
   // One order per (user, Idempotency-Key). PostgreSQL treats NULLs as
   // distinct, so any number of orders may have no key.
   @@unique([userId, idempotencyKey])
+  @@index([userId])
+  @@index([shopId])
+  @@index([orderStatus])
+  @@index([createdAt])
   @@map("orders")
 }
 
@@ -294,7 +297,6 @@ model ShopPricingRule {
   shop           PrintShop       @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
   orderDocuments OrderDocument[]
 
-  @@index([shopId])
   // A given (shop, printType, paperSize, sides) combination may legitimately
   // have several rows over time (different effectiveFrom - see
   // pricing.service.ts's overlap-prevention, which allows sequential,
@@ -304,6 +306,7 @@ model ShopPricingRule {
   // legitimate repricing. This also serves as the lookup index the overlap
   // check and order-time resolution query already relied on.
   @@unique([shopId, printType, paperSize, sides, effectiveFrom])
+  @@index([shopId])
   @@map("shop_pricing_rules")
 }
 
@@ -319,11 +322,11 @@ model ShopFinishingRule {
   shop           PrintShop       @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
   orderDocuments OrderDocument[]
 
-  @@index([shopId])
   // Same rationale as ShopPricingRule above: multiple rows for the same
   // (shop, finishingType) are fine across different effectiveFrom periods,
   // but an identical row twice is always a duplication bug.
   @@unique([shopId, finishingType, effectiveFrom])
+  @@index([shopId])
   @@map("shop_finishing_rules")
 }
 
