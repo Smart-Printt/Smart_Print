@@ -60,3 +60,22 @@ export interface SafeOrder {
   items: SafeOrderItem[];
   statusHistory: SafeOrderStatusEvent[];
 }
+
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface PaginatedOrders {
+  orders: SafeOrder[];
+  pagination: Pagination;
+}
+
+// Admin dashboard numbers for orders created since a given moment.
+export interface OrderSummary {
+  orderCount: number;
+  // Decimal string, like every other money value in the API.
+  revenue: string;
+}

@@ -7,6 +7,7 @@ import { createApp } from '../src/app';
 import { env } from '../src/config/env';
 import { prisma } from '../src/config/prisma';
 import { hashPassword } from '../src/utils/password';
+import { removeFakeDocumentFiles, writeFakeDocumentFile } from './helpers/fakeDocumentFile';
 
 const app = createApp();
 
@@ -62,7 +63,7 @@ async function registerStudent(label: string): Promise<{ userId: string; token: 
 }
 
 async function createFakeDocument(userId: string, pageCount: number | null = 10) {
-  return prisma.document.create({
+  const document = await prisma.document.create({
     data: {
       userId,
       fileName: 'faculty-test.pdf',
@@ -75,6 +76,8 @@ async function createFakeDocument(userId: string, pageCount: number | null = 10)
       pageCount,
     },
   });
+  await writeFakeDocumentFile(document.storageKey);
+  return document;
 }
 
 function baseItem(documentId: string, overrides: Record<string, unknown> = {}) {
@@ -152,6 +155,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await removeFakeDocumentFiles();
   // Only ever remove data this test file itself created. CSE_FACULTY is the
   // real seeded shop, so cleanup is scoped to orders placed by this file's
   // test-prefixed users - never to every order at that shop. Queue,

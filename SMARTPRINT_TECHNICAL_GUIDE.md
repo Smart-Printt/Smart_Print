@@ -13,7 +13,7 @@
 4. Passwords are hashed with **bcrypt**, never stored plain (`utils/password.ts`).
 5. Order lifecycle: `PLACED → PAYMENT_CONFIRMED → QUEUED → PRINTING → READY → COLLECTED` (or `CANCELLED`).
 6. Price is **always computed server-side** from `ShopPricingRule` — client-sent prices are never trusted (`pricing.service.ts`).
-7. Queue is **strict FIFO** ordered by `enteredAt` — no priority logic exists (`queue.service.ts`).
+7. Queue is **strict FIFO** ordered by `queueNumber` (allocated under the shop lock) — no priority logic exists (`queue.service.ts`).
 8. Payment is **MOCK/SIMULATED** (`payments/mockPaymentProvider.ts`) — no real gateway.
 9. FACULTY printing at shop `CSE_FACULTY` is free (₹0, no payment step) — everywhere else FACULTY pays like a STUDENT.
 10. A payment successfully confirming and the order entering the queue happen in **one atomic DB transaction** — this is the single most important "why Prisma/transactions" answer.
@@ -136,8 +136,8 @@ PostgreSQL (localhost:5432, database "smartprint")
 
 **Folder structure** (`code/frontend/src/`):
 - `pages/` — split by role: `auth/`, `student/`, `staff/`, `admin/`, `shared/`, `errors/`
-- `components/` — `NavBar.tsx`, `ProtectedRoute.tsx`, `StatusBadge.tsx`, plus `ui/` and `staff/` subfolders
-- `services/` — one API-wrapper file per backend resource: `authApi.ts`, `orderApi.ts`, `paymentApi.ts`, `documentApi.ts`, `queueApi.ts`, `refundApi.ts`, `pricingApi.ts`, `shopApi.ts`, `shopQueueApi.ts`, `adminStaffApi.ts`, plus `apiClient.ts` (the shared `fetch` wrapper) and `client.ts`/`types.ts`
+- `components/` — `StatusBadge.tsx`, plus `ui/` and `staff/` subfolders (route protection lives in `routes/guards.tsx`)
+- `services/` — one API-wrapper file per backend resource: `authApi.ts`, `orderApi.ts`, `paymentApi.ts`, `documentApi.ts`, `queueApi.ts`, `refundApi.ts`, `pricingApi.ts`, `shopApi.ts`, `shopQueueApi.ts`, `adminStaffApi.ts`, plus `apiClient.ts` (the shared `fetch` wrapper) and `index.ts` (re-exports)
 - `context/` — `AuthContext.tsx` (global logged-in user + token), `ToastContext.tsx` (notifications)
 - `routes/guards.tsx` — `RequireAuth`, `RequireGuest`, `RequireRole` route wrappers
 - `hooks/` — `useAuth.ts`, `useToast.ts`, `useDebouncedValue.ts`
@@ -175,7 +175,7 @@ Purpose: track one order's status/history, pay, cancel, request refund.
 API calls: `GET /api/orders/:id`, `POST /api/orders/:orderId/payment`, `POST /api/orders/:orderId/payment/confirm`, `PATCH /api/orders/:id/cancel`, `POST /api/orders/:orderId/refund`
 Backend endpoint: `order.routes.ts`, `payment.routes.ts`, `refund.routes.ts`
 
-**PAGE: StaffDashboardPage / StaffQueue** (`pages/staff/StaffDashboardPage.tsx`)
+**PAGE: StaffDashboardPage** (`pages/staff/StaffDashboardPage.tsx`)
 Purpose: shop staff's queue view — see waiting orders, start next, mark ready.
 API calls: `GET /api/shops/:shopId/queue`, `POST /api/shops/:shopId/queue/start-next`, `PATCH /api/shops/:shopId/queue/:queueId/complete`
 Backend endpoint: `shopQueue.routes.ts`
@@ -212,7 +212,8 @@ Backend endpoint: various, gated by `requireRole('ADMIN')`.
 | GET | `/api/documents/:id/download` | Download | Yes | owner/staff-of-shop/admin | `download` |
 | DELETE | `/api/documents/:id` | Delete (if not on an order) | Yes | owner | `remove` |
 | POST | `/api/orders` | Create order | Yes | STUDENT/FACULTY | `order.controller.create` → `order.service.createOrder` |
-| GET | `/api/orders` | List orders (role-scoped) | Yes | any | `list` → `listOrdersForRequester` |
+| GET | `/api/orders` | List orders, role-scoped, one page at a time. Query: `page` (default 1), `limit` (default 20, max 100), `status` (comma-separated), `from`, `to`, `shopId`, `q` (order code). Returns `{ orders, pagination: { page, limit, total, totalPages } }` | Yes | any | `list` → `listOrdersForRequester` |
+| GET | `/api/orders/summary` | Order count and revenue since `from` (admin dashboard) | Yes | ADMIN | `summary` → `getOrderSummary` |
 | GET | `/api/orders/:id` | Get one order | Yes | owner/staff-of-shop/admin | `getOne` |
 | PATCH | `/api/orders/:id/cancel` | Cancel order | Yes | owner | `cancel` |
 | POST | `/api/orders/:orderId/payment` | Initiate payment | Yes | owner | `payment.controller.initiate` → `initiatePayment` |
@@ -222,7 +223,7 @@ Backend endpoint: various, gated by `requireRole('ADMIN')`.
 | PATCH | `/api/orders/:orderId/refund/process` | Settle refund | Yes | ADMIN | `processRefund` |
 | GET | `/api/orders/:orderId/refund` | View refund | Yes | owner/staff/admin | `getOne` |
 | GET | `/api/orders/:orderId/queue` | Get queue entry | Yes | owner/staff/admin | `queue.controller.getOne` |
-| GET | `/api/orders/:orderId/queue/position` | Get queue position | Yes | owner/staff/admin | `getPosition` |
+| GET | `/api/orders/:orderId/queue-position` | Get queue position | Yes | owner/staff/admin | `getPosition` |
 | PATCH | `/api/orders/:orderId/collect` | Mark collected | Yes | ADMIN/SHOP_STAFF | `collect` |
 | POST | `/api/shops` | Create shop | Yes | ADMIN | `shop.controller.create` |
 | GET | `/api/shops` | List shops | Yes | any | `list` |
@@ -306,6 +307,8 @@ React PrintFlowPage → POST /api/orders  { shopId, items:[{documentId, copies, 
          - pricingService.resolvePricingRule() — finds the shop's CURRENT price for (printType,paperSize,sides)
          - resolveFinishingRule() — optional binding/stapling price
          - computes printCost, finishingCost, lineTotal (all Prisma.Decimal, not float)
+     - if the request has an Idempotency-Key header and an order with that (user, key) exists → return it (replay);
+       same key + different request → 409. (See "Order idempotency" in code/backend/README.md.)
      - if FACULTY at CSE_FACULTY shop → isFreeFacultyShop() → zero out all prices
      - prisma.$transaction([ order.create, orderDocument.createMany, orderStatusHistory.create,
                               (+ enqueueOrderWithinTransaction if free faculty order) ])
@@ -348,11 +351,11 @@ React → POST /api/orders/:orderId/payment/confirm  {}
 | **User** | All accounts (4 roles) | `userId`(PK), `email`(unique), `passwordHash`, `role`, `status`, `shopId`(FK, nullable) | 1 User → many Document, Order, OrderStatusHistory, PasswordResetToken. Many User (staff) → 1 PrintShop |
 | **Document** | Uploaded files | `documentId`(PK), `userId`(FK), `storageKey`(unique), `fileHash`, `pageCount` | 1 Document → many OrderDocument |
 | **PrintShop** | A physical print shop | `shopId`(PK), `shopCode`(unique, e.g. `CSE_FACULTY`), `isActive`, `acceptingOrders` | 1 Shop → many Order, ShopPricingRule, ShopFinishingRule, staff Users |
-| **Order** | One print order | `orderId`(PK), `orderCode`(unique, human-readable), `userId`(FK), `shopId`(FK), `orderStatus`, `totalAmount` | 1 Order → many OrderDocument; 1 Order → 0..1 Queue (one-to-one); 1 Order → many Payment; 1 Order → many OrderStatusHistory |
+| **Order** | One print order | `orderId`(PK), `orderCode`(unique, human-readable), `userId`(FK), `shopId`(FK), `orderStatus`, `totalAmount`, `idempotencyKey`/`idempotencyRequestHash` (optional; unique per user) | 1 Order → many OrderDocument; 1 Order → 0..1 Queue (one-to-one); 1 Order → many Payment; 1 Order → many OrderStatusHistory |
 | **OrderDocument** | Line item (one doc within an order) | `orderDocumentId`(PK), `orderId`(FK), `documentId`(FK), `pricingRuleId`(FK), snapshot prices (`pricePerPage`, `finishingPrice`, `lineTotal`) | Many-to-one to Order, Document, ShopPricingRule, ShopFinishingRule |
 | **ShopPricingRule** | Price per (printType,paperSize,sides) per shop, with effective dates | `pricingRuleId`(PK), `shopId`(FK), `pricePerPage`, `effectiveFrom/To` | 1 Shop → many rules; 1 rule → many OrderDocument (snapshotted, never edited retroactively) |
 | **ShopFinishingRule** | Price for binding/lamination/etc per shop | similar to above | same pattern |
-| **Queue** | FIFO queue entry, 1-to-1 with an Order | `queueId`(PK), `orderId`(FK, **unique** — enforces one-to-one), `queueNumber`, `queueStatus`, `enteredAt` | 1-to-1 with Order |
+| **Queue** | FIFO queue entry, 1-to-1 with an Order | `queueId`(PK), `orderId`(FK, **unique** — enforces one-to-one), `shopId` (must equal the order's shop — composite FK), `queueNumber` (unique per shop), `queueStatus`, `enteredAt`. A partial unique index allows only one `PRINTING` entry per shop | 1-to-1 with Order |
 | **Payment** | A payment attempt on an order | `paymentId`(PK), `orderId`(FK), `amount`, `paymentStatus`, `transactionId`(unique) | Many Payment → 1 Order (an order can have multiple attempts, e.g. a failed one then a retry); 1 Payment → many Refund |
 | **Refund** | A refund against a successful payment | `refundId`(PK), `paymentId`(FK), `refundAmount`, `refundStatus` | Many-to-one to Payment |
 | **OrderStatusHistory** | Audit trail of every status change | `historyId`(PK), `orderId`(FK), `status`, `changedByUserId`(FK, nullable), `changedAt` | Many-to-one to Order and User |
@@ -368,6 +371,8 @@ React → POST /api/orders/:orderId/payment/confirm  {}
 `User —(places)→ Order —(has line items)→ OrderDocument —(references)→ Document`
 `Order —(has)→ Queue` (1:1) `, Order —(has)→ Payment —(can have)→ Refund`
 `PrintShop —(owns)→ ShopPricingRule / ShopFinishingRule —(priced into)→ OrderDocument`
+
+**Constraints Prisma cannot express:** partial unique indexes (e.g. one `PRINTING` queue entry per shop, one `SUCCESS` payment per order) and `CHECK` constraints live only in the migration SQL. They are listed, with how to apply them to existing data, in `code/backend/README.md` ("Database constraints Prisma cannot express").
 
 **Prisma model → Postgres table:** every model maps via `@@map("...")`, e.g. `model User { ... @@map("users") }` → actual Postgres table is `users` (snake_case), while Prisma code uses `prisma.user` (camelCase model name). Field names similarly map via `@map("...")`, e.g. `userId String @map("user_id")`.
 
@@ -483,10 +488,10 @@ Upload (multipart form, field "file")
 
 **Technical explanation:**
 - `Queue` model: one row per order, `queueStatus` ∈ `WAITING | PRINTING | COMPLETED | CANCELLED`.
-- FIFO ordering is **always** `ORDER BY enteredAt ASC, queueId ASC` (`queue.service.ts::FIFO_ORDER`) — never by price, copies, or user.
+- FIFO ordering is **always** `ORDER BY queueNumber ASC, queueId ASC` (`queue.service.ts::FIFO_ORDER`) — never by price, copies, or user. `queueNumber` is allocated as `max + 1` while holding the shop lock, so it is the exact order in which entries were serialized; `enteredAt` is an application-clock timestamp kept for display/audit and does not decide order.
 - `startNextForShop()`: locks the shop row (`SELECT ... FOR UPDATE`), checks no order is currently `PRINTING` at that shop (**only one printing job per shop at a time**), picks the oldest `WAITING` entry, flips it to `PRINTING`.
-- Position for a waiting order = count of WAITING entries at that shop with an earlier `enteredAt` (or same `enteredAt` but smaller `queueId` as a tiebreaker), +1. Position is **computed on read**, never stored — so it can never go stale when someone ahead completes/cancels.
-- **No priority field exists anywhere in the schema.** `queueNumber` is just a human-readable sequence number, explicitly commented in the schema as "must NOT be used to determine processing order."
+- Position for a waiting order = count of WAITING entries at that shop with a smaller `queueNumber` (or the same `queueNumber` but smaller `queueId` as a last-resort tiebreaker), +1. Position is **computed on read**, never stored — so it can never go stale when someone ahead completes/cancels.
+- **No priority field exists anywhere in the schema.** `queueNumber` is the per-shop sequence number; it doubles as the FIFO key because it is assigned under the shop lock.
 
 **"How does your queue work?" — short answer:**
 "It's a strict FIFO queue per shop. When a payment succeeds (or a faculty order is free), the order is atomically inserted into that shop's queue ordered by entry time. Staff can only start the oldest waiting order, and only one order can be printing per shop at a time. There's no priority logic — position is always purely by arrival time."
@@ -535,7 +540,7 @@ async confirmPayment(params) {
 | `PORT` | Port the Express server listens on (currently `4321` in this setup) |
 | `NODE_ENV` | `development` / `production` — gates things like dev-console email fallback and `simulateOutcome` |
 | `JWT_SECRET` | Signing key for JWTs — must be kept private; anyone with it could forge valid tokens |
-| `JWT_EXPIRES_IN` | Token lifetime (e.g. `1d`) |
+| `JWT_EXPIRES_IN` | Access token lifetime (default `15m`); see also `REFRESH_TOKEN_TTL_DAYS`, `REFRESH_COOKIE_SAMESITE` |
 | `ALLOWED_STUDENT_EMAIL_DOMAIN` | Restricts public self-registration to a specific email domain |
 | `UPLOAD_DIR`, `MAX_FILE_SIZE_MB` | Document upload configuration |
 | `FRONTEND_URL` | Used to build the password-reset link |
@@ -783,7 +788,7 @@ Short: Use Case, Class, Activity, Swimlane, DFD Levels 0/1/2 (see §22 for mappi
 
 20. **T: "Could you swap PostgreSQL for MySQL?"** → **A: "Reasonably easily — Prisma abstracts most of the SQL dialect differences; I'd change the `provider` in `schema.prisma`'s `datasource` block and re-run migrations. A few Postgres-specific raw queries (`FOR UPDATE` row locks) are actually standard SQL too, so they'd likely still work."**
 
-21. **T: "Why is `logout` just a no-op?"** → **A: "JWTs are stateless — nothing is stored server-side to revoke. 'Logging out' is really just the client discarding its token; the endpoint exists for a conventional API shape, not real server-side invalidation."**
+21. **T: "How does `logout` work?"** → **A: "Access tokens are short-lived (15 minutes) and stateless. The login session is a separate refresh token, stored hashed in the database and sent as an httpOnly cookie. Logout revokes that refresh token and clears the cookie; the access token the browser still holds just expires."**
 
 22. **T: "What if I try to cancel an order that's already printing?"** → **A: "Blocked — `CANCELLABLE_ORDER_STATUSES` only includes PLACED/PAYMENT_CONFIRMED/QUEUED; a PRINTING order returns a 409 Conflict explaining printing may have already started."**
 
@@ -913,7 +918,7 @@ ResetPasswordPage → POST /api/auth/reset-password {token, password}
 - **Database:** `smartprint`, 13 tables, all defined in `prisma/schema.prisma`
 - **Main models:** User, Document, PrintShop, Order, OrderDocument, ShopPricingRule, ShopFinishingRule, Queue, Payment, Refund, OrderStatusHistory, PasswordResetToken
 - **Auth:** JWT (`{userId, role}`), bcrypt-hashed passwords, `authenticate` + `requireRole` middleware
-- **Queue logic:** strict FIFO by `enteredAt`, one PRINTING order per shop max
+- **Queue logic:** strict FIFO by `queueNumber`, one PRINTING order per shop max
 - **Payment:** MOCK provider (`mockPaymentProvider.ts`), interface-based for future real gateway
 - **Email:** dev-console fallback unless SMTP env vars set
 - **Key folders:** `code/backend/src/{routes,controllers,services}`, `code/frontend/src/{pages,services,context}`

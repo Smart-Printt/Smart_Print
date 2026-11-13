@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/types/api'
 import { ForgotPasswordPage } from './ForgotPasswordPage'
@@ -107,5 +107,43 @@ describe('ForgotPasswordPage', () => {
 
     await waitFor(() => expect(screen.getByText(/check your email/i)).toBeInTheDocument())
     expect(screen.getByRole('link', { name: /back to login/i })).toHaveAttribute('href', '/login')
+  })
+})
+
+describe('ForgotPasswordPage - rate limiting and server errors', () => {
+  beforeEach(() => {
+    mockForgotPassword.mockReset()
+  })
+
+  async function submit() {
+    const user = userEvent.setup()
+    renderForgotPasswordPage()
+    await user.type(screen.getByLabelText(/email/i), 'student@thapar.edu')
+    await user.click(screen.getByRole('button', { name: /send reset link/i }))
+  }
+
+  it('when rate limited (429), shows the server message, not "Something went wrong", and stays on the form', async () => {
+    mockForgotPassword.mockRejectedValue(new ApiError(429, 'Too many password reset requests. Please try again later.'))
+    await submit()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Too many password reset requests. Please try again later.')
+    expect(alert).not.toHaveTextContent(/something went wrong/i)
+    expect(screen.queryByText(/check your email/i)).not.toBeInTheDocument() // never claims an email was sent
+    expect(screen.getByRole('button', { name: /send reset link/i })).toBeEnabled()
+  })
+
+  it('a 429 without a message still gets a clear "wait and try again" message', async () => {
+    mockForgotPassword.mockRejectedValue(new ApiError(429, ''))
+    await submit()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/too many (requests|attempts)/i)
+  })
+
+  it('an unexpected server error keeps the generic message (no internals shown)', async () => {
+    mockForgotPassword.mockRejectedValue(new ApiError(500, 'stack trace: db password=hunter2'))
+    await submit()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Something went wrong. Please try again.')
+    expect(alert).not.toHaveTextContent(/hunter2|stack trace/i)
   })
 })

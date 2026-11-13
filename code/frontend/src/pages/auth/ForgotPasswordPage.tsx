@@ -12,6 +12,9 @@ import { ApiError } from '@/types/api'
 function forgotPasswordErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 400) return error.message || 'Please enter a valid email address.'
+    // Rate limited: retrying straight away hits the same limit, so say so
+    // instead of the generic "something went wrong, try again".
+    if (error.status === 429) return error.message || 'Too many requests. Please wait a few minutes and try again.'
     if (error.status === 0) return 'Connection lost. Please check your network and try again.'
   }
   return 'Something went wrong. Please try again.'

@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import type { SafeDocument, SafeOrder, SafeQueueEntry, SafeShop } from '@/types'
+import { ApiError } from '@/types/api'
 import { PrintFlowPage } from './PrintFlowPage'
 
 const mockUseAuth = vi.fn()
@@ -35,7 +36,7 @@ const mockOrderCreate = vi.fn()
 const mockOrderGetOne = vi.fn()
 vi.mock('@/services/orderApi', () => ({
   orderApi: {
-    create: (req: unknown) => mockOrderCreate(req),
+    create: (...args: unknown[]) => mockOrderCreate(...args),
     getOne: (id: string) => mockOrderGetOne(id),
   },
 }))
@@ -258,5 +259,94 @@ describe('PrintFlowPage - multi-document order flow', () => {
     await waitFor(() => expect(screen.getByText("You're in the queue")).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('#18')).toBeInTheDocument())
     expect(mockQueueGetForOrder).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('PrintFlowPage - duplicate order protection', () => {
+  const PLACED_ORDER: SafeOrder = {
+    orderId: 'order-9',
+    orderCode: 'SP-0009',
+    shopId: G_BLOCK.shopId,
+    shopName: G_BLOCK.shopName,
+    customerName: 'Test Student',
+    customerEmail: 'student@example.edu',
+    orderStatus: 'PLACED',
+    totalAmount: '32',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    cancelledAt: null,
+    cancelledReason: null,
+    items: [],
+    statusHistory: [],
+  }
+
+  async function reachReviewStep() {
+    mockUseAuth.mockReturnValue({ user: { userId: 'u1', name: 'Student', role: 'STUDENT', shopId: null } })
+    mockShopList.mockResolvedValue([G_BLOCK])
+    mockPreview.mockResolvedValue({
+      shopId: G_BLOCK.shopId,
+      items: [
+        { documentId: 'doc-a', fileName: 'Assignment.pdf', printType: 'BW', paperSize: 'A4', sides: 'SINGLE', copies: 1, printPageCount: 5, pricePerPage: '2', printCost: '10', finishingType: null, finishingCost: '0', lineTotal: '10' },
+        { documentId: 'doc-b', fileName: 'Notes.pdf', printType: 'BW', paperSize: 'A4', sides: 'SINGLE', copies: 1, printPageCount: 12, pricePerPage: '1', printCost: '12', finishingType: null, finishingCost: '0', lineTotal: '12' },
+      ],
+      totalAmount: '22',
+    })
+    renderFlow()
+    await selectTwoDocumentsAndShop(G_BLOCK)
+    await waitFor(() => expect(screen.getByText('₹22.00')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Place Order' })).toBeInTheDocument())
+  }
+
+  it('retries a failed placement with the SAME Idempotency-Key', async () => {
+    mockOrderCreate
+      .mockRejectedValueOnce(new ApiError(0, 'Connection lost. Please check your network and try again.'))
+      .mockResolvedValueOnce(PLACED_ORDER)
+    await reachReviewStep()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await waitFor(() => expect(screen.getByText('Amount to pay')).toBeInTheDocument())
+
+    expect(mockOrderCreate).toHaveBeenCalledTimes(2)
+    const firstKey = mockOrderCreate.mock.calls[0][1]
+    expect(typeof firstKey).toBe('string')
+    expect(firstKey.length).toBeGreaterThanOrEqual(8)
+    expect(mockOrderCreate.mock.calls[1][1]).toBe(firstKey)
+  })
+
+  it('going back from payment and placing the unchanged order again reuses the key', async () => {
+    mockOrderCreate.mockResolvedValue(PLACED_ORDER)
+    await reachReviewStep()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await waitFor(() => expect(screen.getByText('Amount to pay')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Place Order' })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await waitFor(() => expect(mockOrderCreate).toHaveBeenCalledTimes(2))
+
+    expect(mockOrderCreate.mock.calls[1][1]).toBe(mockOrderCreate.mock.calls[0][1])
+  })
+
+  it('changing the order after going back uses a NEW key', async () => {
+    mockOrderCreate.mockResolvedValue(PLACED_ORDER)
+    await reachReviewStep()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await waitFor(() => expect(screen.getByText('Amount to pay')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Back' })) // review -> settings
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Increase copies' }).length).toBeGreaterThan(0))
+    await userEvent.click(screen.getAllByRole('button', { name: 'Increase copies' })[0])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Place Order' })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Place Order' }))
+    await waitFor(() => expect(mockOrderCreate).toHaveBeenCalledTimes(2))
+
+    expect(mockOrderCreate.mock.calls[1][1]).not.toBe(mockOrderCreate.mock.calls[0][1])
   })
 })

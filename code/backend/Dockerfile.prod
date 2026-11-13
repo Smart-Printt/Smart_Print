@@ -1,0 +1,38 @@
+# Production image: compiles TypeScript and runs the compiled build as a
+# non-root user. Development keeps using Dockerfile (ts-node-dev).
+#
+# Build:  docker build -f Dockerfile.prod -t smartprint-backend .
+# Migrations are not run on startup; apply them as a separate, deliberate
+# step from the build stage, e.g.
+#   docker build -f Dockerfile.prod --target build -t smartprint-backend-build .
+#   docker run --rm -e DATABASE_URL=... smartprint-backend-build npx prisma migrate deploy
+
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
+COPY package*.json ./
+RUN npm ci
+COPY prisma ./prisma
+RUN npx prisma generate
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM node:24-bookworm-slim AS runtime
+ENV NODE_ENV=production \
+    PORT=4321
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=build /app/dist ./dist
+COPY prisma ./prisma
+RUN mkdir -p /app/uploads && chown -R node:node /app/uploads
+USER node
+EXPOSE 4321
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:' + process.env.PORT + '/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+CMD ["node", "dist/server.js"]

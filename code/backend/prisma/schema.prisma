@@ -1,5 +1,5 @@
 // SmartPrint - Backend Phase 1 database schema
-// FIFO printing queue is ordered by Queue.enteredAt (see FIFO note on the Queue model).
+// FIFO printing queue is ordered by Queue.queueNumber (see FIFO note on the Queue model).
 
 generator client {
   provider = "prisma-client-js"
@@ -109,19 +109,22 @@ enum DocumentFileType {
 // ─────────────────────────────────────────────────────────────────────────
 
 model User {
-  userId       String     @id @default(uuid()) @map("user_id")
-  name         String
-  email        String     @unique
-  phone        String?
-  passwordHash String     @map("password_hash")
-  role         UserRole
-  status       UserStatus @default(ACTIVE)
+  userId            String     @id @default(uuid()) @map("user_id")
+  name              String
+  email             String     @unique
+  phone             String?
+  passwordHash      String     @map("password_hash")
+  // Set whenever the password changes (reset, change-password). The auth
+  // middleware rejects any access token issued before this moment.
+  passwordChangedAt DateTime?  @map("password_changed_at")
+  role              UserRole
+  status            UserStatus @default(ACTIVE)
   // Only ever set for role=SHOP_STAFF - see the CHECK constraint added in
   // the phase8_shop_staff migration (STUDENT/ADMIN rows must keep this
   // null). Nullable rather than required so a SHOP_STAFF account can exist
   // between creation and shop assignment; the admin staff endpoints
   // require it explicitly at creation time (see staff.service.ts).
-  shopId       String?    @map("shop_id")
+  shopId            String?    @map("shop_id")
 
   // onDelete: Restrict - a shop with assigned staff can never be deleted
   // out from under them (staff must be reassigned/unassigned first). This
@@ -132,6 +135,7 @@ model User {
   orders              Order[]
   orderStatusChanges  OrderStatusHistory[] @relation("OrderStatusChangedBy")
   passwordResetTokens PasswordResetToken[]
+  refreshTokens       RefreshToken[]
 
   @@index([email])
   @@index([shopId])
@@ -156,6 +160,26 @@ model PasswordResetToken {
   @@index([userId])
   @@index([expiresAt])
   @@map("password_reset_tokens")
+}
+
+model RefreshToken {
+  tokenId   String    @id @default(uuid()) @map("token_id")
+  userId    String    @map("user_id")
+  // Only the SHA-256 of the token is stored, never the token itself.
+  tokenHash String    @unique @map("token_hash")
+  // All tokens descended from one login share a family, so reuse of an
+  // already-rotated token can revoke the whole chain.
+  familyId  String    @map("family_id")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 model Document {
@@ -208,16 +232,23 @@ model PrintShop {
 }
 
 model Order {
-  orderId         String      @id @default(uuid()) @map("order_id")
-  orderCode       String      @unique @map("order_code")
-  userId          String      @map("user_id")
-  shopId          String      @map("shop_id")
-  orderStatus     OrderStatus @default(PLACED) @map("order_status")
-  totalAmount     Decimal     @map("total_amount") @db.Decimal(10, 2)
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
-  cancelledAt     DateTime?   @map("cancelled_at")
-  cancelledReason String?     @map("cancelled_reason")
+  orderId                String      @id @default(uuid()) @map("order_id")
+  orderCode              String      @unique @map("order_code")
+  userId                 String      @map("user_id")
+  shopId                 String      @map("shop_id")
+  orderStatus            OrderStatus @default(PLACED) @map("order_status")
+  totalAmount            Decimal     @map("total_amount") @db.Decimal(10, 2)
+  createdAt              DateTime    @default(now()) @map("created_at")
+  updatedAt              DateTime    @updatedAt @map("updated_at")
+  cancelledAt            DateTime?   @map("cancelled_at")
+  cancelledReason        String?     @map("cancelled_reason")
+  // Order-creation idempotency (see order.service.ts::createOrder). Both are
+  // NULL for orders created without an Idempotency-Key header. The key is
+  // scoped to the user: the same key from two users is two unrelated keys.
+  // requestHash is a SHA-256 of the canonicalised request body, used to
+  // reject a key that is reused for a different request.
+  idempotencyKey         String?     @map("idempotency_key")
+  idempotencyRequestHash String?     @map("idempotency_request_hash")
 
   user           User                 @relation(fields: [userId], references: [userId])
   shop           PrintShop            @relation(fields: [shopId], references: [shopId])
@@ -226,10 +257,23 @@ model Order {
   payments       Payment[]
   statusHistory  OrderStatusHistory[]
 
+  // Referenced by queue's composite foreign key (order_id, shop_id) so the
+  // database - not just application code - guarantees a queue entry's shop
+  // is its order's shop. order_id alone is already unique (the primary
+  // key); PostgreSQL still needs a unique index on exactly these columns
+  // to accept the composite foreign key.
+  @@unique([orderId, shopId])
+  // One order per (user, Idempotency-Key). PostgreSQL treats NULLs as
+  // distinct, so any number of orders may have no key.
+  @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([shopId])
   @@index([orderStatus])
   @@index([createdAt])
+  // Serve the paginated order list (newest first, optionally by status) for one
+  // user or one shop without sorting the rows in memory.
+  @@index([userId, orderStatus, createdAt(sort: Desc)])
+  @@index([shopId, orderStatus, createdAt(sort: Desc)])
   @@map("orders")
 }
 
@@ -278,7 +322,6 @@ model ShopPricingRule {
   shop           PrintShop       @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
   orderDocuments OrderDocument[]
 
-  @@index([shopId])
   // A given (shop, printType, paperSize, sides) combination may legitimately
   // have several rows over time (different effectiveFrom - see
   // pricing.service.ts's overlap-prevention, which allows sequential,
@@ -288,6 +331,7 @@ model ShopPricingRule {
   // legitimate repricing. This also serves as the lookup index the overlap
   // check and order-time resolution query already relied on.
   @@unique([shopId, printType, paperSize, sides, effectiveFrom])
+  @@index([shopId])
   @@map("shop_pricing_rules")
 }
 
@@ -303,20 +347,40 @@ model ShopFinishingRule {
   shop           PrintShop       @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
   orderDocuments OrderDocument[]
 
-  @@index([shopId])
   // Same rationale as ShopPricingRule above: multiple rows for the same
   // (shop, finishingType) are fine across different effectiveFrom periods,
   // but an identical row twice is always a duplication bug.
   @@unique([shopId, finishingType, effectiveFrom])
+  @@index([shopId])
   @@map("shop_finishing_rules")
 }
 
-// FIFO queue: WAITING entries must be retrieved ordered by enteredAt ASC.
-// queue_number is a human-readable token only and must NOT be used to
-// determine processing order. No priority score / weighting fields exist.
+// FIFO queue: WAITING entries are retrieved ordered by queue_number ASC (then
+// queue_id as a last-resort tie-break). queue_number is allocated as max + 1
+// per shop while the shop row is locked, so it is exactly the order in which
+// entries were serialized. entered_at is an application-clock timestamp
+// (millisecond resolution; it can tie or step backwards) kept for display and
+// audit - it does not decide order. No priority score / weighting fields exist.
+//
+// Database-enforced invariants (migration 20261022000000_queue_integrity):
+//   - shop_id always equals the shop of the entry's order: shop_id is
+//     denormalised from orders.shop_id and tied to it by the composite
+//     foreign key (order_id, shop_id) -> orders(order_id, shop_id).
+//   - (shop_id, queue_number) is unique, so a shop can never hand out the
+//     same queue number twice.
+//   - order_id is unique, so an order has at most one queue entry.
+//   - AT MOST ONE PRINTING ENTRY PER SHOP is a partial unique index
+//     (queue_one_printing_per_shop: UNIQUE (shop_id) WHERE queue_status =
+//     'PRINTING'). Prisma has no syntax for partial indexes, so it exists
+//     only in the migration SQL; see backend/README.md ("Database
+//     constraints Prisma cannot express").
+//   - CHECK constraints (also migration-only) tie queue_status to the
+//     started_at / completed_at / cancelled_at timestamps and require
+//     queue_number >= 1.
 model Queue {
   queueId     String      @id @default(uuid()) @map("queue_id")
   orderId     String      @unique @map("order_id")
+  shopId      String      @map("shop_id")
   queueNumber Int         @map("queue_number")
   queueStatus QueueStatus @default(WAITING) @map("queue_status")
   enteredAt   DateTime    @default(now()) @map("entered_at")
@@ -324,11 +388,17 @@ model Queue {
   completedAt DateTime?   @map("completed_at")
   cancelledAt DateTime?   @map("cancelled_at")
 
-  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+  // onUpdate: Restrict - an order's shop never changes; if it ever did, the
+  // queue entry (and its per-shop queue number) must not silently follow it.
+  order Order @relation(fields: [orderId, shopId], references: [orderId, shopId], onDelete: Cascade, onUpdate: Restrict)
 
+  @@unique([shopId, queueNumber])
+  // Prisma requires the exact relation columns to be unique for a one-to-one
+  // relation (order_id alone is already unique above).
+  @@unique([orderId, shopId])
   @@index([enteredAt])
   @@index([queueStatus])
-  // Supports the FIFO retrieval query: WHERE queue_status = 'WAITING' ORDER BY entered_at ASC
+  // Supports listing WAITING entries by arrival time (display/audit); FIFO order itself is by queue_number.
   @@index([queueStatus, enteredAt])
   @@map("queue")
 }

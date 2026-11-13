@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { Stepper } from '@/components/ui/Stepper'
 import { PageHeader } from '@/layouts/AppShell'
 import { documentApi } from '@/services/documentApi'
+import { createIdempotencyKey } from '@/utils/idempotencyKey'
 import type { PricingPreviewResult, SafeDocument, SafeOrder, SafeShop } from '@/types'
 import { StepDocument } from './StepDocument'
 import { StepPayment } from './StepPayment'
@@ -21,6 +22,18 @@ export function PrintFlowPage() {
   const [shop, setShop] = useState<SafeShop | null>(null)
   const [preview, setPreview] = useState<PricingPreviewResult | null>(null)
   const [order, setOrder] = useState<SafeOrder | null>(null)
+  const orderAttempt = useRef<{ signature: string; key: string } | null>(null)
+
+  // One Idempotency-Key per distinct order request. Kept here rather than in
+  // the review step because that step unmounts when the user goes back from
+  // payment; placing the unchanged order again must return the order that
+  // already exists, not create a second one.
+  function getIdempotencyKey(signature: string): string {
+    if (orderAttempt.current?.signature !== signature) {
+      orderAttempt.current = { signature, key: createIdempotencyKey() }
+    }
+    return orderAttempt.current.key
+  }
 
   useEffect(() => {
     // Supports two entry points: a single ?documentId= (the "Print" quick
@@ -123,6 +136,7 @@ export function PrintFlowPage() {
             shop={shop}
             items={items}
             preview={preview}
+            getIdempotencyKey={getIdempotencyKey}
             onBack={() => setStepIndex(2)}
             onOrderCreated={handleOrderCreated}
           />

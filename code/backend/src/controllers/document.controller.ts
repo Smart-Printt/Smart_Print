@@ -1,7 +1,10 @@
+import { pipeline } from 'node:stream';
+
 import contentDisposition from 'content-disposition';
 import { Response } from 'express';
 
 import * as documentService from '../services/document.service';
+import { DownloadableDocument } from '../services/document.service';
 import { AuthenticatedRequest } from '../types/auth.types';
 import { asyncHandler } from '../utils/asyncHandler';
 import { UnauthorizedError, ValidationError } from '../utils/errors';
@@ -54,34 +57,48 @@ export const getOne = asyncHandler(async (req: AuthenticatedRequest, res: Respon
   res.status(200).json({ success: true, data: { document } });
 });
 
+// The file was already opened by the service, so everything that can fail
+// BEFORE this point (not found, no permission, cannot open) has been thrown
+// as an ordinary error and answered as JSON by the error handler. From here
+// the response is committed, and pipeline() owns both streams:
+//   - the file fails mid-way        -> the response is destroyed, so the client
+//                                      sees an aborted/incomplete body (the
+//                                      Content-Length it was promised never
+//                                      arrives) instead of a truncated file that
+//                                      looks complete, and nothing is left
+//                                      unhandled that could crash the process;
+//   - the client disconnects        -> the file stream is destroyed, releasing
+//                                      its file descriptor.
+function sendDocument(
+  res: Response,
+  { fileName, mimeType, fileSize, stream }: DownloadableDocument,
+  disposition: 'attachment' | 'inline',
+): void {
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('Content-Length', String(fileSize));
+  res.setHeader('Content-Disposition', contentDisposition(fileName, { type: disposition }));
+
+  pipeline(stream, res, (err) => {
+    // A client that simply went away is routine, not an error.
+    if (err && (err as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+      // eslint-disable-next-line no-console
+      console.error('Document stream failed mid-response:', err);
+    }
+  });
+}
+
 export const download = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const user = requireUser(req);
-  const { fileName, mimeType, stream } = await documentService.getDocumentForDownload(
-    user.userId,
-    user.role,
-    req.params.id,
-  );
-
-  res.setHeader('Content-Type', mimeType);
-  res.setHeader('Content-Disposition', contentDisposition(fileName, { type: 'attachment' }));
-  // Never derived from client input and never exposes a filesystem path -
-  // the stream comes from the storage abstraction, not a resolved path.
-  (stream as NodeJS.ReadableStream).pipe(res);
+  const document = await documentService.getDocumentForDownload(user.userId, user.role, req.params.id);
+  sendDocument(res, document, 'attachment');
 });
 
 // Same authorization as download, but `inline` so a browser renders a
 // supported type (e.g. PDF) directly instead of forcing a save dialog.
 export const view = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const user = requireUser(req);
-  const { fileName, mimeType, stream } = await documentService.getDocumentForView(
-    user.userId,
-    user.role,
-    req.params.id,
-  );
-
-  res.setHeader('Content-Type', mimeType);
-  res.setHeader('Content-Disposition', contentDisposition(fileName, { type: 'inline' }));
-  (stream as NodeJS.ReadableStream).pipe(res);
+  const document = await documentService.getDocumentForView(user.userId, user.role, req.params.id);
+  sendDocument(res, document, 'inline');
 });
 
 export const remove = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {

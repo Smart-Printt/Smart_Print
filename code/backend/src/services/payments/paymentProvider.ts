@@ -53,6 +53,8 @@ export interface ConfirmRefundResult {
 }
 
 export interface PaymentProvider {
+  // Stable identifier matching the PAYMENT_PROVIDER setting (e.g. "mock").
+  readonly name: string;
   initiatePayment(params: InitiatePaymentParams): Promise<InitiatePaymentResult>;
   confirmPayment(params: ConfirmPaymentParams): Promise<ConfirmPaymentResult>;
   initiateRefund(params: InitiateRefundParams): Promise<InitiateRefundResult>;

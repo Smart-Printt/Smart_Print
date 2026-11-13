@@ -11,6 +11,8 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<SafeUser>
   register: (input: { name: string; email: string; phone?: string; password: string }) => Promise<SafeUser>
   logout: () => void
+  updateProfile: (input: { name?: string; phone?: string }) => Promise<SafeUser>
+  changePassword: (input: { currentPassword: string; newPassword: string; confirmPassword: string }) => Promise<void>
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -78,9 +80,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void authApi.logout().catch(() => {})
   }, [])
 
+  const updateProfile = useCallback(async (input: { name?: string; phone?: string }) => {
+    const updated = await authApi.updateProfile(input)
+    setUser(updated)
+    return updated
+  }, [])
+
+  const changePassword = useCallback(
+    async (input: { currentPassword: string; newPassword: string; confirmPassword: string }) => {
+      const result = await authApi.changePassword(input)
+      setToken(result.token)
+      setUser(result.user)
+    },
+    [],
+  )
+
   const value = useMemo(
-    () => ({ user, isLoading, login, register, logout }),
-    [user, isLoading, login, register, logout],
+    () => ({ user, isLoading, login, register, logout, updateProfile, changePassword }),
+    [user, isLoading, login, register, logout, updateProfile, changePassword],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

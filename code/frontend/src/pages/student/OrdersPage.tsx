@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { Card } from '@/components/ui/Card'
+import { Pager } from '@/components/ui/Pager'
 import { OrderStatusBadge } from '@/components/ui/Badge'
 import { SkeletonCardList } from '@/components/ui/Skeleton'
 import { ErrorState, StateBlock } from '@/components/ui/StateBlock'
+import { useOrderList } from '@/hooks/useOrderList'
 import { PageHeader } from '@/layouts/AppShell'
-import { orderApi } from '@/services/orderApi'
-import type { OrderStatus, SafeOrder } from '@/types'
+import type { OrderStatus } from '@/types'
 import { formatDate } from '@/utils/date'
 import { formatMoney } from '@/utils/money'
 
@@ -17,6 +18,8 @@ const ACTIVE_STATUSES: OrderStatus[] = ['PLACED', 'PAYMENT_CONFIRMED', 'QUEUED',
 const COMPLETED_STATUSES: OrderStatus[] = ['COLLECTED']
 const CANCELLED_STATUSES: OrderStatus[] = ['CANCELLED']
 
+const PAGE_SIZE = 10
+
 const TABS: { key: Tab; label: string; statuses: OrderStatus[] }[] = [
   { key: 'active', label: 'Active', statuses: ACTIVE_STATUSES },
   { key: 'completed', label: 'Completed', statuses: COMPLETED_STATUSES },
@@ -25,25 +28,24 @@ const TABS: { key: Tab; label: string; statuses: OrderStatus[] }[] = [
 
 export function OrdersPage() {
   const navigate = useNavigate()
-  const [orders, setOrders] = useState<SafeOrder[] | null>(null)
-  const [error, setError] = useState<unknown>(null)
   const [tab, setTab] = useState<Tab>('active')
-
-  async function load() {
-    setError(null)
-    try {
-      setOrders(await orderApi.list())
-    } catch (err) {
-      setError(err)
-    }
-  }
-
-  useEffect(() => {
-    void load()
-  }, [])
+  const [page, setPage] = useState(1)
 
   const activeTabDef = TABS.find((t) => t.key === tab)!
-  const filtered = orders?.filter((o) => activeTabDef.statuses.includes(o.orderStatus)) ?? []
+  // The server does the filtering and paging: only the current tab's page is
+  // ever downloaded.
+  const params = useMemo(
+    () => ({ status: activeTabDef.statuses, page, limit: PAGE_SIZE }),
+    [activeTabDef, page],
+  )
+  const { data, error, reload } = useOrderList(params)
+  const orders = data?.orders ?? null
+  const filtered = orders ?? []
+
+  function changeTab(next: Tab) {
+    setTab(next)
+    setPage(1)
+  }
 
   return (
     <div>
@@ -54,7 +56,7 @@ export function OrdersPage() {
           <button
             key={t.key}
             className={`segmented__option ${tab === t.key ? 'is-active' : ''}`}
-            onClick={() => setTab(t.key)}
+            onClick={() => changeTab(t.key)}
           >
             {t.label}
           </button>
@@ -62,7 +64,7 @@ export function OrdersPage() {
       </div>
 
       {error ? (
-        <ErrorState error={error} onRetry={load} />
+        <ErrorState error={error} onRetry={reload} />
       ) : orders === null ? (
         <SkeletonCardList count={3} height={92} />
       ) : filtered.length === 0 ? (
@@ -94,6 +96,7 @@ export function OrdersPage() {
               </div>
             </Card>
           ))}
+          {data && <Pager page={data.pagination.page} totalPages={data.pagination.totalPages} total={data.pagination.total} onPageChange={setPage} />}
         </div>
       )}
     </div>

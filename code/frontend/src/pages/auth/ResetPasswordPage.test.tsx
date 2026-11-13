@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/types/api'
 import { ResetPasswordPage } from './ResetPasswordPage'
@@ -125,5 +125,49 @@ describe('ResetPasswordPage', () => {
   it('back to login link is present before submission', () => {
     renderResetPasswordPage()
     expect(screen.getByRole('link', { name: /back to login/i })).toHaveAttribute('href', '/login')
+  })
+})
+
+describe('ResetPasswordPage - rate limiting and server errors', () => {
+  beforeEach(() => {
+    mockResetPassword.mockReset()
+  })
+
+  it('when rate limited (429) the VALID link is kept: the server message is shown, the form stays, and a retry reuses the same token', async () => {
+    mockResetPassword
+      .mockRejectedValueOnce(new ApiError(429, 'Too many password reset attempts. Please try again later.'))
+      .mockResolvedValueOnce('ok')
+    renderResetPasswordPage('/reset-password?token=still-valid-token')
+
+    await fillAndSubmit('GoodPassword123', 'GoodPassword123')
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Too many password reset attempts. Please try again later.')
+    expect(alert).not.toHaveTextContent(/invalid or has expired/i) // the link is NOT blamed
+    expect(screen.queryByText(/request a new reset link/i)).not.toBeInTheDocument()
+
+    await userEvent.setup().click(screen.getByRole('button', { name: /reset password/i }))
+    expect(await screen.findByText(/password has been reset successfully/i)).toBeInTheDocument()
+    expect(mockResetPassword).toHaveBeenCalledTimes(2)
+    expect(mockResetPassword).toHaveBeenLastCalledWith(expect.objectContaining({ token: 'still-valid-token' }))
+  })
+
+  it('an unexpected server error keeps the generic message (no internals shown) and the form', async () => {
+    mockResetPassword.mockRejectedValue(new ApiError(500, 'stack trace: secret'))
+    renderResetPasswordPage()
+    await fillAndSubmit('GoodPassword123', 'GoodPassword123')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Something went wrong. Please try again.')
+    expect(alert).not.toHaveTextContent(/secret|stack trace/i)
+    expect(screen.getByRole('button', { name: /reset password/i })).toBeInTheDocument()
+  })
+
+  it('a rejected link (401: used, expired, or the account was deactivated) shows the invalid-link state with a way to request a new one', async () => {
+    mockResetPassword.mockRejectedValue(new ApiError(401, 'This password reset link is invalid or has expired'))
+    renderResetPasswordPage()
+    await fillAndSubmit('GoodPassword123', 'GoodPassword123')
+    expect(await screen.findByText(/invalid or has expired/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /request a new reset link/i })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/new password/i)).not.toBeInTheDocument()
   })
 })

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (lint, build, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code/backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: smartprint_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: code/backend/package-lock.json
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run lint
+      - run: npm run build
+      # The test-db guard (scripts/testDbGuard.ts) requires .env.test pointing
+      # at database "smartprint_test" on localhost:5432. Throwaway CI values.
+      - name: Create .env.test
+        run: |
+          cat > .env.test <<'ENV'
+          DATABASE_URL="postgresql://postgres:postgres@localhost:5432/smartprint_test"
+          JWT_SECRET=ci-test-secret
+          JWT_EXPIRES_IN=1d
+          ALLOWED_STUDENT_EMAIL_DOMAIN=thapar.edu
+          ENV
+      - run: npm run test:db:migrate
+      - run: npm test
+
+  frontend:
+    name: Frontend (lint, build, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: code/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test

@@ -1,6 +1,7 @@
 import { env } from '../config/env';
 import { prisma } from '../config/prisma';
 import { emailService } from './email';
+import { IssuedRefreshToken, issueRefreshToken, revokeUserSessions } from './session.service';
 import { buildPasswordResetEmail } from './email/passwordResetEmail';
 import { SafeUser } from '../types/auth.types';
 import { ConflictError, UnauthorizedError, ValidationError } from '../utils/errors';
@@ -35,10 +36,17 @@ export interface AuthResult {
   token: string;
 }
 
+// What register/login return internally. The controller sends `user` and
+// `token` in the JSON body and puts `refresh` in an httpOnly cookie - the
+// refresh token never appears in a response body.
+export interface AuthSession extends AuthResult {
+  refresh: IssuedRefreshToken;
+}
+
 // Public registration always creates a STUDENT with ACTIVE status. Any
 // role/status/password_hash/user_id fields submitted by the client are
 // ignored entirely - they are never read from the input object.
-export async function registerStudent(input: RegisterStudentInput): Promise<AuthResult> {
+export async function registerStudent(input: RegisterStudentInput): Promise<AuthSession> {
   assertValidName(input.name);
   assertValidEmailInput(input.email);
   assertValidPhone(input.phone);
@@ -72,14 +80,15 @@ export async function registerStudent(input: RegisterStudentInput): Promise<Auth
   });
 
   const token = signAccessToken({ userId: user.userId, role: user.role });
+  const refresh = await issueRefreshToken(user.userId);
 
-  return { user: toSafeUser(user), token };
+  return { user: toSafeUser(user), token, refresh };
 }
 
 // Deliberately vague on failure ("Invalid email or password") to avoid
 // leaking which part of the credential was wrong or whether the account
 // exists at all.
-export async function login(input: LoginInput): Promise<AuthResult> {
+export async function login(input: LoginInput): Promise<AuthSession> {
   assertValidEmailInput(input.email);
   assertValidPasswordInput(input.password);
 
@@ -101,8 +110,87 @@ export async function login(input: LoginInput): Promise<AuthResult> {
   }
 
   const token = signAccessToken({ userId: user.userId, role: user.role });
+  const refresh = await issueRefreshToken(user.userId);
 
-  return { user: toSafeUser(user), token };
+  return { user: toSafeUser(user), token, refresh };
+}
+
+export interface UpdateProfileInput {
+  name?: unknown;
+  phone?: unknown;
+}
+
+// Only name and phone are editable here. Email, role, status and shop are
+// never read from the input, so they cannot be changed through this call.
+export async function updateProfile(userId: string, input: UpdateProfileInput): Promise<SafeUser> {
+  const data: { name?: string; phone?: string | null } = {};
+
+  if (input.name !== undefined) {
+    assertValidName(input.name);
+    data.name = input.name.trim();
+  }
+  if (input.phone !== undefined) {
+    assertValidPhone(input.phone);
+    data.phone = input.phone ? input.phone.trim() : null;
+  }
+  if (Object.keys(data).length === 0) {
+    throw new ValidationError('Nothing to update');
+  }
+
+  const user = await prisma.user.update({ where: { userId }, data });
+  return toSafeUser(user);
+}
+
+export interface ChangePasswordInput {
+  currentPassword: unknown;
+  newPassword: unknown;
+  confirmPassword?: unknown;
+}
+
+// Checks the current password, sets the new one, and signs the user out
+// everywhere else: every refresh token is revoked and tokens issued before
+// now stop working. The device that made the change gets a fresh session
+// back, so the user is not logged out of the browser they are using.
+export async function changePassword(userId: string, input: ChangePasswordInput): Promise<AuthSession> {
+  assertValidPasswordInput(input.currentPassword);
+  assertValidPasswordInput(input.newPassword);
+  if (input.confirmPassword !== undefined && input.confirmPassword !== input.newPassword) {
+    throw new ValidationError('Passwords do not match');
+  }
+  validatePasswordPolicy(input.newPassword);
+
+  const user = await prisma.user.findUnique({ where: { userId } });
+  if (!user || user.status !== 'ACTIVE') {
+    throw new UnauthorizedError();
+  }
+
+  // 400 rather than 401: the caller is logged in, they just got a field wrong
+  // (a 401 would make the frontend sign them out).
+  if (!(await comparePassword(input.currentPassword, user.passwordHash))) {
+    throw new ValidationError('Current password is incorrect');
+  }
+  if (input.newPassword === input.currentPassword) {
+    throw new ValidationError('New password must be different from the current password');
+  }
+
+  const passwordHash = await hashPassword(input.newPassword);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const changed = await tx.user.update({
+      where: { userId },
+      data: { passwordHash, passwordChangedAt: new Date() },
+    });
+    await revokeUserSessions(userId, tx);
+    return changed;
+  });
+
+  // Issued after the transaction on purpose: refresh tokens are rejected when
+  // created before passwordChangedAt, and a row created inside the transaction
+  // would carry the transaction's start time.
+  const refresh = await issueRefreshToken(userId);
+  const token = signAccessToken({ userId, role: updated.role });
+
+  return { user: toSafeUser(updated), token, refresh };
 }
 
 export async function getSafeUserById(userId: string): Promise<SafeUser | null> {
@@ -253,14 +341,21 @@ export async function requestPasswordReset(input: ForgotPasswordInput): Promise<
     }),
   ]);
 
-  const resetUrl = `${env.frontendUrl}/reset-password?token=${rawToken}`;
+  const resetUrl = `${env.frontendUrl.replace(/\/+$/, '')}/reset-password?token=${rawToken}`;
 
+  // Delivery is deliberately NOT awaited. Sending mail takes orders of
+  // magnitude longer than the early return for an unknown address, so waiting
+  // for it would let anyone tell "account exists" from "no such account" by
+  // timing the response - undoing the identical-response defense above. The
+  // message is handed to the provider immediately; its outcome is only ever
+  // logged server-side (never to the caller), whether it succeeds or fails.
+  void deliverPasswordResetEmail(user.email, resetUrl);
+}
+
+async function deliverPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
   try {
-    await emailService.send(buildPasswordResetEmail(user.email, resetUrl));
+    await emailService.send(buildPasswordResetEmail(to, resetUrl));
   } catch (err) {
-    // A delivery failure must never change the (already-sent-by-now)
-    // response shape - surfaced only server-side, for an operator to
-    // diagnose, never to the caller.
     // eslint-disable-next-line no-console
     console.error(
       'Failed to send password reset email:',
@@ -290,7 +385,7 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
   const tokenHash = hashResetToken(input.token.trim());
   const passwordHash = await hashPassword(input.password);
 
-  await prisma.$transaction(async (tx) => {
+  const accepted = await prisma.$transaction(async (tx) => {
     // A single conditional UPDATE is the atomic "claim" of this token: if
     // two requests race on the same token, only the first can ever match
     // `usedAt: null` (Postgres re-checks the WHERE clause against the
@@ -301,12 +396,29 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
       data: { usedAt: new Date() },
     });
     if (claimed.count === 0) {
-      throw new UnauthorizedError(INVALID_TOKEN_MESSAGE);
+      return false;
     }
 
-    const resetToken = await tx.passwordResetToken.findUniqueOrThrow({ where: { tokenHash } });
+    const resetToken = await tx.passwordResetToken.findUniqueOrThrow({
+      where: { tokenHash },
+      include: { user: { select: { status: true } } },
+    });
 
-    await tx.user.update({ where: { userId: resetToken.userId }, data: { passwordHash } });
+    // A link issued while the account was active must not work once it has
+    // been deactivated: recovery never reactivates or edits an account. The
+    // token stays consumed (the claim above commits), so the link cannot come
+    // back to life if the account is later reactivated.
+    if (resetToken.user.status !== 'ACTIVE') {
+      return false;
+    }
+
+    // Only the password changes - never the role, status, email or shop.
+    await tx.user.update({
+      where: { userId: resetToken.userId },
+      data: { passwordHash, passwordChangedAt: new Date() },
+    });
+    // Anyone holding the old password (or a stolen session) is signed out.
+    await revokeUserSessions(resetToken.userId, tx);
 
     // Defensive cleanup: any other still-unused token for this user (e.g.
     // one left over from a request that failed to invalidate correctly) is
@@ -315,5 +427,12 @@ export async function resetPassword(input: ResetPasswordInput): Promise<void> {
       where: { userId: resetToken.userId, usedAt: null },
       data: { usedAt: new Date() },
     });
+    return true;
   });
+
+  // One message for every way a link can be unusable (unknown, expired, used,
+  // or belonging to a deactivated account) so the response reveals nothing.
+  if (!accepted) {
+    throw new UnauthorizedError(INVALID_TOKEN_MESSAGE);
+  }
 }

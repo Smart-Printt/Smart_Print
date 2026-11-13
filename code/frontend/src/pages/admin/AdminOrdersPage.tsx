@@ -1,14 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { Card } from '@/components/ui/Card'
 import { OrderStatusBadge } from '@/components/ui/Badge'
+import { Input } from '@/components/ui/Input'
+import { Pager } from '@/components/ui/Pager'
 import { SkeletonCardList } from '@/components/ui/Skeleton'
 import { ErrorState, StateBlock } from '@/components/ui/StateBlock'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { useOrderList } from '@/hooks/useOrderList'
 import { PageHeader } from '@/layouts/AppShell'
-import { orderApi } from '@/services/orderApi'
-import type { OrderStatus, SafeOrder } from '@/types'
+import type { OrderStatus } from '@/types'
 import { formatDateTime } from '@/utils/date'
 import { formatMoney } from '@/utils/money'
+
+const PAGE_SIZE = 20
 
 const STATUS_FILTERS: (OrderStatus | 'ALL')[] = [
   'ALL',
@@ -22,31 +27,48 @@ const STATUS_FILTERS: (OrderStatus | 'ALL')[] = [
 ]
 
 export function AdminOrdersPage() {
-  const [orders, setOrders] = useState<SafeOrder[] | null>(null)
-  const [error, setError] = useState<unknown>(null)
   const [filter, setFilter] = useState<OrderStatus | 'ALL'>('ALL')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const debouncedSearch = useDebouncedValue(search.trim())
 
-  async function load() {
-    setError(null)
-    try {
-      setOrders(await orderApi.list())
-    } catch (err) {
-      setError(err)
-    }
+  // Filtering, searching and paging all happen on the server.
+  const params = useMemo(
+    () => ({
+      page,
+      limit: PAGE_SIZE,
+      status: filter === 'ALL' ? undefined : [filter],
+      q: debouncedSearch || undefined,
+    }),
+    [page, filter, debouncedSearch],
+  )
+  const { data, error, reload } = useOrderList(params)
+  const orders = data?.orders ?? null
+
+  function changeFilter(next: OrderStatus | 'ALL') {
+    setFilter(next)
+    setPage(1)
   }
 
-  useEffect(() => {
-    void load()
-  }, [])
-
-  const filtered = useMemo(
-    () => (orders ?? []).filter((o) => filter === 'ALL' || o.orderStatus === filter),
-    [orders, filter],
-  )
+  function changeSearch(next: string) {
+    setSearch(next)
+    setPage(1)
+  }
 
   return (
     <div>
       <PageHeader title="Orders" subtitle="Every order placed across all shops." />
+
+      <div style={{ maxWidth: 360, marginBottom: 14 }}>
+        <Input
+          type="search"
+          placeholder="Search by order code"
+          aria-label="Search by order code"
+          value={search}
+          onChange={(e) => changeSearch(e.target.value)}
+          maxLength={40}
+        />
+      </div>
 
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', marginBottom: 20, paddingBottom: 4 }}>
         {STATUS_FILTERS.map((s) => (
@@ -54,7 +76,7 @@ export function AdminOrdersPage() {
             key={s}
             className={`segmented__option ${filter === s ? 'is-active' : ''}`}
             style={{ background: filter === s ? 'var(--color-primary-soft)' : 'var(--color-surface-sunken)', color: filter === s ? 'var(--color-primary)' : undefined, flexShrink: 0 }}
-            onClick={() => setFilter(s)}
+            onClick={() => changeFilter(s)}
           >
             {s === 'ALL' ? 'All' : s.replace('_', ' ')}
           </button>
@@ -62,14 +84,14 @@ export function AdminOrdersPage() {
       </div>
 
       {error ? (
-        <ErrorState error={error} onRetry={load} />
+        <ErrorState error={error} onRetry={reload} />
       ) : orders === null ? (
         <SkeletonCardList count={4} height={80} />
-      ) : filtered.length === 0 ? (
-        <StateBlock icon="orders" title="No orders found" description="Try a different filter." />
+      ) : orders.length === 0 ? (
+        <StateBlock icon="orders" title="No orders found" description="Try a different filter or search." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {filtered.map((order) => (
+          {orders.map((order) => (
             <Card key={order.orderId} padded>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
                 <div>
@@ -88,6 +110,7 @@ export function AdminOrdersPage() {
               </div>
             </Card>
           ))}
+          {data && <Pager page={data.pagination.page} totalPages={data.pagination.totalPages} total={data.pagination.total} onPageChange={setPage} />}
         </div>
       )}
     </div>

@@ -3,7 +3,9 @@ import { Response } from 'express';
 import * as orderService from '../services/order.service';
 import { AuthenticatedRequest } from '../types/auth.types';
 import { asyncHandler } from '../utils/asyncHandler';
-import { UnauthorizedError } from '../utils/errors';
+import { UnauthorizedError, ValidationError } from '../utils/errors';
+import { IDEMPOTENCY_KEY_HEADER, parseIdempotencyKey } from '../utils/idempotency';
+import { parseDateParam, parseOrderListQuery } from '../utils/orderListQuery';
 
 function requireUserId(req: AuthenticatedRequest): string {
   if (!req.user) {
@@ -16,19 +18,45 @@ function requireUserId(req: AuthenticatedRequest): string {
 // body - see order.service.ts for how each item's document ownership,
 // shop, pricing, and finishing rule are independently re-validated
 // server-side regardless of what the client sends.
+//
+// An optional Idempotency-Key header makes the call safe to retry: the same
+// key with the same request returns the already-created order (still 201,
+// plus `Idempotent-Replayed: true`) instead of creating another.
 export const create = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const userId = requireUserId(req);
   const role = req.user!.role;
+  const idempotencyKey = parseIdempotencyKey(req.headers[IDEMPOTENCY_KEY_HEADER.toLowerCase()]);
   const { shopId, items } = req.body ?? {};
-  const order = await orderService.createOrder(userId, { shopId, items }, role);
+  const { order, replayed } = await orderService.createOrder(
+    userId,
+    { shopId, items },
+    role,
+    idempotencyKey,
+  );
+  if (replayed) {
+    res.setHeader('Idempotent-Replayed', 'true');
+  }
   res.status(201).json({ success: true, data: { order } });
 });
 
 export const list = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const userId = requireUserId(req);
   const role = req.user!.role;
-  const orders = await orderService.listOrdersForRequester(userId, role);
-  res.status(200).json({ success: true, data: { orders } });
+  const query = parseOrderListQuery(req.query);
+  const { orders, pagination } = await orderService.listOrdersForRequester(userId, role, query);
+  res.status(200).json({ success: true, data: { orders, pagination } });
+});
+
+// ADMIN only (see order.routes.ts). `from` is the start of "today" in the
+// admin's own timezone, which only the browser knows, so the client sends it.
+export const summary = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const raw = req.query.from;
+  const from = parseDateParam('from', typeof raw === 'string' ? raw : undefined);
+  if (!from) {
+    throw new ValidationError('from is required');
+  }
+  const data = await orderService.getOrderSummary(from);
+  res.status(200).json({ success: true, data });
 });
 
 export const getOne = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {

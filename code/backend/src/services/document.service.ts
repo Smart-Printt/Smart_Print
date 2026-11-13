@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 
 import { Document, UserRole } from '@prisma/client';
 
 import { prisma } from '../config/prisma';
 import { storageService } from './storage';
 import { SafeDocument, UploadedFileInput } from '../types/document.types';
-import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
+import { ConflictError, NotFoundError, ServiceUnavailableError, ValidationError } from '../utils/errors';
 import { generateStorageKey, sanitizeOriginalFileName } from '../utils/fileNaming';
 import { sha256Hex } from '../utils/hash';
 import { validateUploadedFile } from './documents/fileValidation.service';
@@ -167,24 +168,71 @@ async function findAccessibleDocumentOrThrow(
   return document;
 }
 
+const MAX_NAMES_IN_MESSAGE = 5;
+
+// Verifies that every given document's stored object exists and is readable.
+// Callers must already have established that the documents belong to the
+// requester (this reports file names), which is why order creation runs it
+// only after its ownership check. Throws:
+//   409 ConflictError            - one or more files are definitely missing
+//   503 ServiceUnavailableError  - storage could not be checked (not the
+//                                  client's fault; retrying may succeed)
+// Nothing is deleted or modified: a missing file leaves the document row, and
+// any order that already references it, exactly as they were.
+export async function assertFilesAvailable(
+  documents: { fileName: string; storageKey: string }[],
+): Promise<void> {
+  let states: Awaited<ReturnType<typeof storageService.checkAvailability>>[];
+  try {
+    states = await Promise.all(documents.map((d) => storageService.checkAvailability(d.storageKey)));
+  } catch (err) {
+    // Log the error code only: storage errors can embed file paths.
+    // eslint-disable-next-line no-console
+    console.error('Document storage availability check failed:', (err as NodeJS.ErrnoException).code ?? (err as Error).name);
+    throw new ServiceUnavailableError('Document storage is temporarily unavailable. Please try again shortly.');
+  }
+
+  const missing = documents.filter((_, i) => states[i] === 'missing').map((d) => d.fileName);
+  if (missing.length === 0) {
+    return;
+  }
+  const shown = missing.slice(0, MAX_NAMES_IN_MESSAGE).map((name) => `"${name}"`).join(', ');
+  const extra = missing.length > MAX_NAMES_IN_MESSAGE ? ` and ${missing.length - MAX_NAMES_IN_MESSAGE} more` : '';
+  throw new ConflictError(
+    missing.length === 1
+      ? `The file for ${shown} is no longer available. Please upload it again before placing the order.`
+      : `The files for ${shown}${extra} are no longer available. Please upload them again before placing the order.`,
+  );
+}
+
 export interface DownloadableDocument {
   fileName: string;
   mimeType: string;
-  stream: NodeJS.ReadableStream;
+  fileSize: number;
+  stream: Readable;
 }
 
+// The file is OPENED here, before the controller sends any header, so every
+// failure to get at it is an ordinary error response. Checking exists() and
+// opening later would leave a gap in which the file can vanish.
 async function loadDocumentStream(document: Document): Promise<DownloadableDocument> {
-  const exists = await storageService.exists(document.storageKey);
-  if (!exists) {
-    // Metadata exists but the physical file is gone - treat it the same as
-    // "not found" rather than crashing or leaking storage internals.
-    throw new NotFoundError('Document file is not available');
+  let stream: Readable;
+  try {
+    stream = await storageService.openReadStream(document.storageKey);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // Metadata exists but the physical file is gone - treat it the same as
+      // "not found" rather than crashing or leaking storage internals.
+      throw new NotFoundError('Document file is not available');
+    }
+    throw err;
   }
 
   return {
     fileName: document.fileName,
     mimeType: document.mimeType,
-    stream: storageService.getReadStream(document.storageKey),
+    fileSize: document.fileSize,
+    stream,
   };
 }
 
@@ -208,26 +256,46 @@ export async function getDocumentForView(
   return loadDocumentStream(document);
 }
 
-// Phase 4: a document referenced by any order can no longer be deleted -
-// the order's snapshot pricing survives, but the source file it was priced
-// against must remain available (re-printing, disputes, etc.). This is the
-// hook Phase 3 left specifically for this check.
-async function assertDocumentDeletable(document: Document): Promise<void> {
-  const referencingOrder = await prisma.orderDocument.findFirst({
-    where: { documentId: document.documentId },
-  });
-  if (referencingOrder) {
-    throw new ConflictError('This document is referenced by an order and cannot be deleted');
-  }
-}
-
+// A document referenced by any order can never be deleted - the order's
+// snapshot pricing survives, but the source file must remain available
+// (re-printing, disputes, etc.).
+//
+// Order of operations matters for crash and race safety:
+//   1. In ONE transaction, lock the document row (FOR UPDATE), check that no
+//      order references it, and delete the row. createOrder share-locks the
+//      same rows, so an order can neither slip in after the check nor
+//      reference a row that is about to disappear.
+//   2. Only after the commit, remove the physical file.
+// The reverse (file first) left a database row pointing at a deleted file
+// whenever step 1 then failed. The worst case now is an unreferenced file
+// left behind by a failed step 2, which is harmless and removable.
 export async function deleteDocument(userId: string, documentId: string): Promise<void> {
   const document = await findOwnedDocumentOrThrow(userId, documentId);
-  await assertDocumentDeletable(document);
 
-  // Physical file first, then metadata, per the documented deletion flow.
-  // delete() is a no-op (not an error) if the file is already missing, so
-  // this whole operation is safe to retry.
-  await storageService.delete(document.storageKey);
-  await prisma.document.delete({ where: { documentId: document.documentId } });
+  await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ document_id: string }[]>`
+      SELECT document_id FROM documents
+      WHERE document_id = ${documentId} AND user_id = ${userId}
+      FOR UPDATE`;
+    if (locked.length === 0) {
+      throw new NotFoundError('Document not found');
+    }
+
+    const referencingOrder = await tx.orderDocument.findFirst({ where: { documentId } });
+    if (referencingOrder) {
+      throw new ConflictError('This document is referenced by an order and cannot be deleted');
+    }
+
+    await tx.document.delete({ where: { documentId } });
+  });
+
+  try {
+    // delete() is a no-op (not an error) if the file is already missing.
+    await storageService.delete(document.storageKey);
+  } catch (err) {
+    // The document is already gone from the user's point of view; an
+    // orphaned file must not turn a successful deletion into an error.
+    // eslint-disable-next-line no-console
+    console.error('Failed to remove file for deleted document:', document.storageKey, err);
+  }
 }

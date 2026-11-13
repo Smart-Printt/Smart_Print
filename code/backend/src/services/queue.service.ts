@@ -1,22 +1,31 @@
-import { Prisma, Queue, UserRole } from '@prisma/client';
+import { OrderStatus, Prisma, Queue, UserRole } from '@prisma/client';
 
 import { prisma } from '../config/prisma';
 import * as orderService from './order.service';
+import { lockOrder, lockShop, transitionOrder } from './orderLocks';
 import * as shopService from './shop.service';
 import { SafeQueueEntry } from '../types/queue.types';
 import { ConflictError, NotFoundError } from '../utils/errors';
 
-type QueueWithOrder = Queue & { order: { orderCode: string; shopId: string } };
+type QueueWithOrder = Queue & { order: { orderCode: string } };
 
 const QUEUE_WITH_ORDER_INCLUDE = {
-  order: { select: { orderCode: true, shopId: true } },
+  order: { select: { orderCode: true } },
 } satisfies Prisma.QueueInclude;
 
-// FIFO tie-break: enteredAt ASC first, queueId ASC second (deterministic
-// for entries created within the same millisecond). Never page count,
-// price, copies, or user - see the repeated warning throughout this file.
+// FIFO order within a shop = the order in which entries were serialized under
+// the shop lock. queueNumber is allocated as (max + 1) while holding that lock
+// (see enqueueOrderWithinTransaction), so it is strictly increasing in exactly
+// that order and is the canonical key. enteredAt is NOT used to decide order:
+// it is a millisecond-resolution reading of the application server's clock, so
+// two entries can share a value and a clock adjustment can move it backwards.
+// queueId (a random UUID) is only a last-resort tie-break; (shopId,
+// queueNumber) is unique in the database, so it can never actually decide
+// between two entries of one shop. Never page
+// count, price, copies, or user. Used by start-next, the listing, "next" and
+// computePosition so they cannot disagree.
 const FIFO_ORDER: Prisma.QueueOrderByWithRelationInput[] = [
-  { enteredAt: 'asc' },
+  { queueNumber: 'asc' },
   { queueId: 'asc' },
 ];
 
@@ -25,7 +34,7 @@ function toSafeQueueEntry(queue: QueueWithOrder, position: number | null): SafeQ
     queueId: queue.queueId,
     orderId: queue.orderId,
     orderCode: queue.order.orderCode,
-    shopId: queue.order.shopId,
+    shopId: queue.shopId,
     queueNumber: queue.queueNumber,
     queueStatus: queue.queueStatus,
     enteredAt: queue.enteredAt,
@@ -36,9 +45,10 @@ function toSafeQueueEntry(queue: QueueWithOrder, position: number | null): SafeQ
   };
 }
 
-// position is always derived from enteredAt/queueId ordering among WAITING
-// entries at the same shop - never stored, so it can never drift out of
-// sync when an earlier order completes or is cancelled.
+// position is always derived from the same ordering as FIFO_ORDER
+// (queueNumber, then queueId) among WAITING entries at the same shop - never
+// stored, so it can never drift out of sync when an earlier order completes or
+// is cancelled.
 async function computePosition(
   client: Prisma.TransactionClient | typeof prisma,
   shopId: string,
@@ -54,10 +64,10 @@ async function computePosition(
   const aheadCount = await client.queue.count({
     where: {
       queueStatus: 'WAITING',
-      order: { shopId },
+      shopId,
       OR: [
-        { enteredAt: { lt: queue.enteredAt } },
-        { enteredAt: queue.enteredAt, queueId: { lt: queue.queueId } },
+        { queueNumber: { lt: queue.queueNumber } },
+        { queueNumber: queue.queueNumber, queueId: { lt: queue.queueId } },
       ],
     },
   });
@@ -76,29 +86,30 @@ export async function enqueueOrderWithinTransaction(
   shopId: string,
   orderId: string,
   changedByUserId: string,
+  fromStatus: OrderStatus,
 ): Promise<void> {
   // Row-locks the shop for the duration of the transaction so two orders
-  // for the SAME shop being paid at the same moment cannot both compute the
-  // same "next" queueNumber - this is the per-shop analogue of the
-  // order-row lock in payment.service.ts::initiatePayment. Different shops
-  // lock different rows, so they never block each other.
-  await tx.$queryRaw`SELECT shop_id FROM print_shops WHERE shop_id = ${shopId} FOR UPDATE`;
+  // for the SAME shop being enqueued at the same moment cannot both compute
+  // the same "next" queueNumber. Callers already hold this lock (shop is the
+  // first lock in the order, see orderLocks.ts); taking it again is a no-op
+  // and keeps this function safe to call on its own.
+  await lockShop(tx, shopId);
 
   const { _max } = await tx.queue.aggregate({
     _max: { queueNumber: true },
-    where: { order: { shopId } },
+    where: { shopId },
   });
   const queueNumber = (_max.queueNumber ?? 0) + 1;
 
-  // Queue.orderId is DB-unique - if this order somehow already has a queue
-  // entry (should be unreachable, since confirmPayment only reaches here
-  // once per order via its own PENDING-only guard), this create throws
-  // rather than silently creating a duplicate.
+  // The database backs this up: Queue.orderId is unique (at most one entry
+  // per order), (shopId, queueNumber) is unique, and the composite foreign key
+  // (orderId, shopId) rejects a shopId that is not the order's shop. Any
+  // violation throws rather than silently creating a bad entry.
   await tx.queue.create({
-    data: { orderId, queueNumber, queueStatus: 'WAITING' },
+    data: { orderId, shopId, queueNumber, queueStatus: 'WAITING' },
   });
 
-  await tx.order.update({ where: { orderId }, data: { orderStatus: 'QUEUED' } });
+  await transitionOrder(tx, orderId, fromStatus, 'QUEUED');
   await tx.orderStatusHistory.create({
     data: {
       orderId,
@@ -144,7 +155,7 @@ export async function getQueueEntryForOrder(
   }
 
   const queue = await findQueueEntryForOrder(orderId);
-  const position = await computePosition(prisma, queue.order.shopId, queue);
+  const position = await computePosition(prisma, queue.shopId, queue);
   return toSafeQueueEntry(queue, position);
 }
 
@@ -173,7 +184,7 @@ export async function listWaitingQueueForShop(
   await shopService.assertShopAccess(userId, role, shopId);
 
   const entries = await prisma.queue.findMany({
-    where: { queueStatus: 'WAITING', order: { shopId } },
+    where: { queueStatus: 'WAITING', shopId },
     orderBy: FIFO_ORDER,
     include: QUEUE_WITH_ORDER_INCLUDE,
   });
@@ -191,7 +202,7 @@ export async function getNextForShop(
   await shopService.assertShopAccess(userId, role, shopId);
 
   const entry = await prisma.queue.findFirst({
-    where: { queueStatus: 'WAITING', order: { shopId } },
+    where: { queueStatus: 'WAITING', shopId },
     orderBy: FIFO_ORDER,
     include: QUEUE_WITH_ORDER_INCLUDE,
   });
@@ -206,7 +217,7 @@ export async function getCurrentForShop(
   await shopService.assertShopAccess(userId, role, shopId);
 
   const entry = await prisma.queue.findFirst({
-    where: { queueStatus: 'PRINTING', order: { shopId } },
+    where: { queueStatus: 'PRINTING', shopId },
     include: QUEUE_WITH_ORDER_INCLUDE,
   });
   return entry ? toSafeQueueEntry(entry, 0) : null;
@@ -236,45 +247,71 @@ export async function startNextForShop(
   const changedByUserId = userId;
 
   const started = await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT shop_id FROM print_shops WHERE shop_id = ${shopId} FOR UPDATE`;
+    // Lock order: shop -> order -> queue (see orderLocks.ts).
+    await lockShop(tx, shopId);
 
+    // Checked up front for a friendly 409; the partial unique index
+    // queue_one_printing_per_shop is the database-level guarantee.
     const alreadyPrinting = await tx.queue.findFirst({
-      where: { queueStatus: 'PRINTING', order: { shopId } },
+      where: { queueStatus: 'PRINTING', shopId },
     });
     if (alreadyPrinting) {
       throw new ConflictError('An order is already printing at this shop');
     }
 
-    const next = await tx.queue.findFirst({
-      where: { queueStatus: 'WAITING', order: { shopId } },
-      orderBy: FIFO_ORDER,
-    });
-    if (!next) {
-      throw new NotFoundError('No orders are waiting in the queue for this shop');
+    // Walk the WAITING entries in FIFO order until one is genuinely
+    // eligible. An entry whose order is no longer QUEUED (cancelled by a
+    // path that did not clean up its queue entry, or otherwise inconsistent)
+    // is skipped - it never blocks the entries behind it, and is never
+    // printed. Eligibility is judged from the order row AS LOCKED, not from
+    // anything read earlier.
+    const skipped: string[] = [];
+    for (;;) {
+      const next = await tx.queue.findFirst({
+        where: { queueStatus: 'WAITING', shopId, queueId: { notIn: skipped } },
+        orderBy: FIFO_ORDER,
+      });
+      if (!next) {
+        throw new NotFoundError('No orders are waiting in the queue for this shop');
+      }
+
+      const order = await lockOrder(tx, next.orderId);
+      if (order.orderStatus !== 'QUEUED' || order.shopId !== shopId) {
+        if (order.orderStatus === 'CANCELLED') {
+          // Repair the stale entry so it stops appearing in the queue.
+          await tx.queue.updateMany({
+            where: { queueId: next.queueId, queueStatus: 'WAITING' },
+            data: { queueStatus: 'CANCELLED', cancelledAt: new Date() },
+          });
+        }
+        skipped.push(next.queueId);
+        continue;
+      }
+
+      const result = await tx.queue.updateMany({
+        where: { queueId: next.queueId, queueStatus: 'WAITING' },
+        data: { queueStatus: 'PRINTING', startedAt: new Date() },
+      });
+      if (result.count === 0) {
+        skipped.push(next.queueId);
+        continue;
+      }
+
+      await transitionOrder(tx, order.orderId, 'QUEUED', 'PRINTING');
+      await tx.orderStatusHistory.create({
+        data: {
+          orderId: order.orderId,
+          status: 'PRINTING',
+          changedByUserId,
+          notes: 'Printing started',
+        },
+      });
+
+      return tx.queue.findUniqueOrThrow({
+        where: { queueId: next.queueId },
+        include: QUEUE_WITH_ORDER_INCLUDE,
+      });
     }
-
-    const result = await tx.queue.updateMany({
-      where: { queueId: next.queueId, queueStatus: 'WAITING' },
-      data: { queueStatus: 'PRINTING', startedAt: new Date() },
-    });
-    if (result.count === 0) {
-      throw new ConflictError('This queue entry is no longer waiting');
-    }
-
-    await tx.order.update({ where: { orderId: next.orderId }, data: { orderStatus: 'PRINTING' } });
-    await tx.orderStatusHistory.create({
-      data: {
-        orderId: next.orderId,
-        status: 'PRINTING',
-        changedByUserId,
-        notes: 'Printing started',
-      },
-    });
-
-    return tx.queue.findUniqueOrThrow({
-      where: { queueId: next.queueId },
-      include: QUEUE_WITH_ORDER_INCLUDE,
-    });
   });
 
   return toSafeQueueEntry(started, 0);
@@ -290,7 +327,7 @@ export async function completeQueueEntry(
   const changedByUserId = userId;
 
   const queue = await prisma.queue.findUnique({ where: { queueId }, include: QUEUE_WITH_ORDER_INCLUDE });
-  if (!queue || queue.order.shopId !== shopId) {
+  if (!queue || queue.shopId !== shopId) {
     throw new NotFoundError('Queue entry not found');
   }
   if (queue.queueStatus !== 'PRINTING') {
@@ -298,6 +335,10 @@ export async function completeQueueEntry(
   }
 
   const updated = await prisma.$transaction(async (tx) => {
+    // Lock order: shop -> order -> queue (see orderLocks.ts).
+    await lockShop(tx, shopId);
+    await lockOrder(tx, queue.orderId);
+
     const result = await tx.queue.updateMany({
       where: { queueId, queueStatus: 'PRINTING' },
       data: { queueStatus: 'COMPLETED', completedAt: new Date() },
@@ -306,7 +347,7 @@ export async function completeQueueEntry(
       throw new ConflictError('Queue entry has already moved on from PRINTING');
     }
 
-    await tx.order.update({ where: { orderId: queue.orderId }, data: { orderStatus: 'READY' } });
+    await transitionOrder(tx, queue.orderId, 'PRINTING', 'READY');
     await tx.orderStatusHistory.create({
       data: {
         orderId: queue.orderId,
@@ -338,13 +379,11 @@ export async function collectOrder(userId: string, role: UserRole, orderId: stri
   }
 
   await prisma.$transaction(async (tx) => {
-    const result = await tx.order.updateMany({
-      where: { orderId, orderStatus: 'READY' },
-      data: { orderStatus: 'COLLECTED' },
-    });
-    if (result.count === 0) {
-      throw new ConflictError('Order has already moved on from READY');
-    }
+    // Lock order: shop -> order (see orderLocks.ts).
+    await lockShop(tx, order.shopId);
+    await lockOrder(tx, orderId);
+
+    await transitionOrder(tx, orderId, 'READY', 'COLLECTED');
 
     await tx.orderStatusHistory.create({
       data: {

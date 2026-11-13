@@ -7,6 +7,7 @@ import { createApp } from '../src/app';
 import { env } from '../src/config/env';
 import { prisma } from '../src/config/prisma';
 import { hashPassword } from '../src/utils/password';
+import { removeFakeDocumentFiles, writeFakeDocumentFile } from './helpers/fakeDocumentFile';
 
 const app = createApp();
 
@@ -63,7 +64,7 @@ async function registerStudent(label: string): Promise<{ userId: string; token: 
 }
 
 async function createFakeDocument(userId: string) {
-  return prisma.document.create({
+  const document = await prisma.document.create({
     data: {
       userId,
       fileName: 'order-access-test.pdf',
@@ -76,6 +77,8 @@ async function createFakeDocument(userId: string) {
       pageCount: 5,
     },
   });
+  await writeFakeDocumentFile(document.storageKey);
+  return document;
 }
 
 function baseItem(documentId: string) {
@@ -102,6 +105,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await removeFakeDocumentFiles();
   await prisma.order.deleteMany({ where: { shopId: { in: [shopA.shopId, shopB.shopId] } } });
   // Staff users reference these shops via a RESTRICT foreign key - they must
   // be removed before the shops themselves can be deleted.
