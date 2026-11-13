@@ -23,8 +23,15 @@ services:
       context: ./backend
     restart: unless-stopped
     env_file:
-      - ./backend/.env
+      # Optional: a fresh clone still starts without it (the values below are
+      # enough). Copy backend/.env.example to backend/.env to change anything.
+      - path: ./backend/.env
+        required: false
     environment:
+      # Fixed here so a different PORT in your own .env cannot break the
+      # 4000:4000 mapping below.
+      PORT: "4000"
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
       DATABASE_URL: postgresql://smartprint:smartprint@db:5432/smartprint?schema=public
     ports:
       - "4000:4000"
@@ -41,7 +48,9 @@ services:
       context: ./frontend
     restart: unless-stopped
     environment:
-      VITE_API_BASE_URL: http://localhost:4000/api
+      # The browser calls /api on the frontend; Vite forwards it to the backend container.
+      VITE_API_BASE_URL: /api
+      VITE_PROXY_TARGET: http://backend:4000
     ports:
       - "5173:5173"
     volumes:

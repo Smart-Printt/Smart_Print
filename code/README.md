@@ -41,9 +41,11 @@ docker compose up -d
 - Frontend: http://localhost:5173
 
 Seed data creates:
-- Admin: `admin@smartprint.local` / `Admin@12345`
-- Shop staff: `staff.a@smartprint.local` / `Staff@12345` (shop A), `staff.g@smartprint.local` / `Staff@12345` (shop G)
-- Student: `student@smartprint.local` / `Student@12345`
+- `admin@smartprint.dev` (admin), `staff@smartprint.dev` (shop staff), `faculty@smartprint.dev`, `student1@smartprint.dev`
+- All share the password `DevPassword123!` (see `backend/prisma/seed.ts`).
+
+No `.env` file is needed for Docker: a fresh clone runs with the defaults in
+`docker-compose.yml`. To change settings, copy `backend/.env.example` to `backend/.env`.
 
 ## Running locally without Docker
 
