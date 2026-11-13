@@ -75,3 +75,29 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+  docker:
+    name: Docker (production images)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check compose files
+        run: |
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.prod.yml --env-file .env.production.example config -q
+      - name: Build backend production image
+        run: docker build -f backend/Dockerfile.prod -t smartprint-backend backend
+      - name: Build frontend production image
+        run: docker build -f frontend/Dockerfile.prod -t smartprint-frontend frontend
+      # Starts the frontend image alone (with a stand-in backend address) and
+      # checks nginx serves the app and sends unknown paths to index.html.
+      - name: Smoke-test frontend image
+        run: |
+          docker run -d --name fe -p 8080:80 -e BACKEND_URL=http://127.0.0.1:9 smartprint-frontend
+          for i in $(seq 1 20); do curl -fsS http://localhost:8080/ >/dev/null && break; sleep 1; done
+          curl -fsS http://localhost:8080/ | grep -q '<div id="root">'
+          curl -fsS http://localhost:8080/orders/some-id | grep -q '<div id="root">'
+          docker logs fe

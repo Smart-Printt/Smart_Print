@@ -1,0 +1,27 @@
+# Production image: builds the React app once and serves the static files
+# with nginx. Development keeps using Dockerfile (the Vite dev server).
+#
+# Build:  docker build -f Dockerfile.prod -t smartprint-frontend .
+#
+# nginx also forwards /api to the backend (see nginx.conf), so the browser
+# talks to one origin and the refresh-token cookie stays same-site.
+# BACKEND_URL picks where /api goes (default http://backend:4000, the
+# service name used in docker-compose.prod.yml).
+
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+# The API is always reached through the same origin in production.
+ENV VITE_API_BASE_URL=/api
+RUN npm run build
+
+FROM nginx:1.27-alpine AS runtime
+ENV BACKEND_URL=http://backend:4000
+# The nginx image fills ${BACKEND_URL} into this template on startup.
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1/ || exit 1

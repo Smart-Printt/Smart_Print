@@ -147,7 +147,7 @@ docker build -f Dockerfile.prod -t smartprint-backend .
 
 - Based on `node:24-bookworm-slim`; compiles TypeScript and runs
   `node dist/server.js` as the non-root `node` user.
-- Sets `NODE_ENV=production` and `PORT=4321`.
+- Sets `NODE_ENV=production` and `PORT=4000`.
 - Uploads need a writable volume mounted at `/app/uploads`.
 - Database migrations are never run on startup. Apply them as a separate,
   deliberate step from the `build` stage (see the comment in
