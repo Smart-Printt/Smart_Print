@@ -16,3 +16,5 @@ Name: Harbani Kaur
 +  [W6: Profile Editing, and Pagination That Does Not Trust the
    Browser](./w6-profile-and-pagination.md)
 +  […]
++  [W8: A Fresh Clone That Works in Docker, and a Pull Request With Nothing Left to
+   Merge](./w8-docker-fresh-clone-and-stale-pr.md)
