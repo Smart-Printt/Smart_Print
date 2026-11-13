@@ -10,22 +10,32 @@ strict FIFO printing queue; admins manage shops and users.
 - **Backend**: Node.js + Express + TypeScript
 - **Database**: PostgreSQL, via **Prisma** ORM
 - **Auth**: JWT + bcrypt password hashing
-- **File storage**: local-disk storage abstraction (`src/lib/storage.ts`) — swappable for object storage later
-- **Payments**: mock payment provider abstraction (`src/lib/payment.ts`) — swappable for a real gateway later
+- **File storage**: local-disk storage abstraction (`backend/src/services/storage/`) — swappable for object storage later
+- **Payments**: mock payment provider abstraction (`backend/src/services/payments/`) — swappable for a real gateway later
 
 ## Project layout
 
 ```
 code/
-  backend/     Express API, Prisma schema/migrations, seed script
-  frontend/    React + Vite student/staff/admin UI
-  docker-compose.yml
+  backend/                  Express API, Prisma schema/migrations, seed script, Jest tests
+  frontend/                 React + Vite student/staff/admin UI, Vitest tests
+  docker-compose.yml        development stack (hot reload)
+  docker-compose.prod.yml   production-style stack (compiled backend, nginx frontend)
+  .env.production.example   template for the production stack's settings
 ```
 
-Backend modules (`backend/src/modules/*`) each contain `*.routes.ts`,
-`*.controller.ts`, and `*.service.ts` — routes wire up middleware/authorization,
-controllers validate input and shape responses, services hold the business
-logic and Prisma calls.
+The backend is layered as `src/routes/*.routes.ts` (URLs, auth and role
+middleware) → `src/controllers/*.controller.ts` (input validation, response
+shape) → `src/services/*.service.ts` (business logic and Prisma calls).
+
+## Ports
+
+| What | Local / dev Docker | Production stack |
+|---|---|---|
+| Backend API | 4000 | 4000 (inside Docker only) |
+| Frontend | 5173 (Vite) | 8080 → nginx on 80 (`FRONTEND_PORT`) |
+| PostgreSQL | 5432 native, 5433 for the dev Docker db | inside Docker only |
+| Test database | `smartprint_test` (see `backend/.env.test.example`) | — |
 
 ## Running with Docker (recommended)
 
@@ -65,22 +75,33 @@ npm install
 npm run dev
 ```
 
+## Production stack
+
+`docker-compose.prod.yml` builds `backend/Dockerfile.prod` (compiled
+TypeScript, non-root user) and `frontend/Dockerfile.prod` (static build served
+by nginx, which also forwards `/api` to the backend).
+
+```bash
+cd code
+cp .env.production.example .env.production   # fill in real values
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d db
+docker compose -f docker-compose.prod.yml --env-file .env.production run --rm migrate
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+```
+
+The backend refuses to start in production with unsafe settings — including
+the mock payment provider — so this stack only comes up once a real payment
+provider is integrated. See `backend/SECURITY_CONFIGURATION.md`.
+
 ## Key design notes
 
-- **order_code** (e.g. `A101`) and **queue_number** (the human-readable token)
-  are generated from native PostgreSQL sequences (`src/lib/sequences.ts`), not
-  `MAX()+1`, so they stay correct under concurrent order/payment creation.
-- **FIFO** queue processing (`POST /api/queue/start-next`) uses
-  `SELECT ... FOR UPDATE SKIP LOCKED` ordered by `queue.entered_at`, so two
-  staff members hitting "start next" at once each safely claim a different
-  order.
-- Pricing/finishing rules use an effective-dated "supersede" pattern: creating
-  a new rule for a given combination closes out any currently-open rule in the
-  same transaction, so there is never more than one active rule per
-  combination.
-- A queue entry is only ever created after a payment succeeds, inside the same
-  transaction that advances the order to `QUEUED` (see
-  `modules/payments/payments.service.ts`).
-- Authorization never trusts a `shop_id`/`user_id` from the client — shop
-  staff access is always derived from `req.user.shopId` on the verified JWT
-  (see `middleware/shopAccess.ts`).
+- **FIFO** queue: entries are served in `queueNumber` order per shop, with the
+  shop row locked while numbers are allocated (`backend/src/services/queue.service.ts`).
+- Order and payment state changes go through the allowed transitions in
+  `backend/src/config/orderTransitions.ts`, under row locks
+  (`backend/src/services/orderLocks.ts`).
+- `POST /api/orders` is idempotent with an `Idempotency-Key` header.
+- A queue entry is only created after a payment succeeds, inside the same
+  transaction that moves the order to `QUEUED`.
+- Authorization never trusts a `shopId`/`userId` from the client — shop staff
+  access comes from the verified user record.

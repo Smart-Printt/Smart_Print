@@ -1,0 +1,95 @@
+# Production-style stack: compiled backend, static frontend behind nginx,
+# PostgreSQL. Development stays in docker-compose.yml (hot reload, source
+# mounted into the containers).
+#
+# Usage (from code/):
+#   cp .env.production.example .env.production   # then fill in real values
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d db
+#   docker compose -f docker-compose.prod.yml --env-file .env.production run --rm migrate
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#
+# The backend refuses to start in production with unsafe settings (mock
+# payments, http or localhost URLs, missing CORS origins...). That is on
+# purpose - see backend/SECURITY_CONFIGURATION.md.
+#
+# Ports: the frontend container listens on 80 and is published on
+# FRONTEND_PORT (default 8080). Put an HTTPS proxy / load balancer in front of
+# it; the backend and database are not published to the host at all.
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  APP_ENV: ${APP_ENV:-production}
+  PORT: "4000"
+  DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-smartprint}?schema=public
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a long random value}
+  PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:?set PAYMENT_PROVIDER}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS}
+  FRONTEND_URL: ${FRONTEND_URL:?set FRONTEND_URL}
+  # nginx (frontend container) + your HTTPS proxy = 2 hops by default.
+  TRUST_PROXY: ${TRUST_PROXY:-2}
+  ALLOWED_STUDENT_EMAIL_DOMAIN: ${ALLOWED_STUDENT_EMAIL_DOMAIN:-thapar.edu}
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+  EMAIL_FROM: ${EMAIL_FROM:-}
+  EMAIL_HOST: ${EMAIL_HOST:-}
+  EMAIL_PORT: ${EMAIL_PORT:-}
+  EMAIL_USER: ${EMAIL_USER:-}
+  EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-smartprint}
+    volumes:
+      - smartprint_prod_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-off job: applies database migrations, then exits. Run it before
+  # starting (or after updating) the backend. Never runs automatically.
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+      target: build
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-smartprint}?schema=public
+    command: ["npx", "prisma", "migrate", "deploy"]
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["tools"]
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    environment: *backend-env
+    volumes:
+      - smartprint_prod_uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:4000
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+volumes:
+  smartprint_prod_db_data:
+  smartprint_prod_uploads:

@@ -21,7 +21,7 @@
 12. `schema.prisma` defines the DB tables; Prisma Client (generated from it) is what the backend actually calls (`prisma.order.create(...)` etc.)
 13. Refund = **full amount only**, only for a `CANCELLED` order with a `SUCCESS` payment, processed by ADMIN only.
 14. Route → Controller → Service → Prisma → PostgreSQL is the layering for every feature.
-15. Backend runs on port **4321**, frontend on **5173/5175**, PostgreSQL on **5432**.
+15. Backend runs on port **4000**, frontend on **5173**, PostgreSQL on **5432**.
 
 ### 🟡 SHOULD KNOW
 - Authorization middleware: `authenticate` (checks JWT) then `requireRole(...)` (checks role) — two separate, composable middleware.
@@ -89,7 +89,7 @@
 | **JWT (jsonwebtoken)** | Stateless auth token | Encodes `userId` + `role`, verified on each request | `utils/jwt.ts`, `middleware/auth.middleware.ts` | Would need server-side sessions |
 | **bcryptjs** | Password hashing | One-way hash so plaintext passwords are never stored | `utils/password.ts` | Passwords stored in plaintext = massive security hole |
 | **Multer** | File upload middleware | Parses `multipart/form-data`, buffers file in memory | `middleware/upload.middleware.ts` | No file upload support in Express by default |
-| **CORS** | Cross-Origin middleware | Lets frontend (port 5173) call backend (port 4321) | `app.ts` (`app.use(cors())`) | Browser blocks cross-origin API calls |
+| **CORS** | Cross-Origin middleware | Lets frontend (port 5173) call backend (port 4000) | `app.ts` (`app.use(cors())`) | Browser blocks cross-origin API calls |
 | **nodemailer** (SMTP service) | Email sending | Sends password-reset emails **if configured** | `services/email/smtpEmail.service.ts` | Falls back to dev-console logging (see §14) |
 | **Jest** | Backend test runner | Integration tests (13 files) | `code/backend/**/*.test.ts` (NOT VERIFIED — count from earlier session note, re-check `npm test` output before quoting exact number) | No automated backend test coverage |
 | **Vitest** | Frontend test runner | Unit tests for pages | `code/frontend/src/**/*.test.tsx` | No automated frontend test coverage |
@@ -100,10 +100,10 @@
 ## 3. ARCHITECTURE
 
 ```
-Browser (React SPA, port 5173/5175)
+Browser (React SPA, port 5173)
    │  fetch('/api/...')  — Vite dev proxy forwards /api to backend
    ▼
-Express App (port 4321)  — src/app.ts
+Express App (port 4000)  — src/app.ts
    │  cors() → express.json() → route → authenticate → requireRole → controller
    ▼
 Controller (src/controllers/*.ts)  — parses req, calls service, sends res
@@ -537,7 +537,7 @@ async confirmPayment(params) {
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Full Postgres connection string — see §8 breakdown |
-| `PORT` | Port the Express server listens on (currently `4321` in this setup) |
+| `PORT` | Port the Express server listens on (`4000` everywhere: local, Docker and the production image) |
 | `NODE_ENV` | `development` / `production` — gates things like dev-console email fallback and `simulateOutcome` |
 | `JWT_SECRET` | Signing key for JWTs — must be kept private; anyone with it could forge valid tokens |
 | `JWT_EXPIRES_IN` | Access token lifetime (default `15m`); see also `REFRESH_TOKEN_TTL_DAYS`, `REFRESH_COOKIE_SAMESITE` |
@@ -914,7 +914,7 @@ ResetPasswordPage → POST /api/auth/reset-password {token, password}
 ## 25. FINAL CHEAT SHEET
 
 - **Stack:** React 19 + TS + Vite | Express + TS | PostgreSQL + Prisma | JWT + bcrypt
-- **Ports:** Backend `4321` · Frontend `5173`/`5175` (dev) · PostgreSQL `5432`
+- **Ports:** Backend `4000` · Frontend `5173` (dev) · PostgreSQL `5432`
 - **Database:** `smartprint`, 13 tables, all defined in `prisma/schema.prisma`
 - **Main models:** User, Document, PrintShop, Order, OrderDocument, ShopPricingRule, ShopFinishingRule, Queue, Payment, Refund, OrderStatusHistory, PasswordResetToken
 - **Auth:** JWT (`{userId, role}`), bcrypt-hashed passwords, `authenticate` + `requireRole` middleware
