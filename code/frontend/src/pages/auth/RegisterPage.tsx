@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
+import { PasswordRules } from '@/components/PasswordRules'
 import { Button } from '@/components/ui/Button'
 import { Icon } from '@/components/ui/Icon'
 import { Input } from '@/components/ui/Input'
@@ -9,6 +10,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { AuthLayout } from '@/layouts/AuthLayout'
 import { homeRouteForRole } from '@/routes/guards'
 import { ApiError } from '@/types/api'
+import { isPasswordValid } from '@/utils/passwordPolicy'
 
 function registerErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -17,14 +19,6 @@ function registerErrorMessage(error: unknown): string {
     if (error.status === 0) return 'Connection lost. Please check your network and try again.'
   }
   return 'Something went wrong. Please try again.'
-}
-
-function passwordChecks(password: string) {
-  return {
-    length: password.length >= 8,
-    letter: /[a-zA-Z]/.test(password),
-    digit: /[0-9]/.test(password),
-  }
 }
 
 export function RegisterPage() {
@@ -38,8 +32,7 @@ export function RegisterPage() {
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const checks = useMemo(() => passwordChecks(password), [password])
-  const passwordValid = checks.length && checks.letter && checks.digit
+  const passwordValid = isPasswordValid(password)
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -130,11 +123,9 @@ export function RegisterPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
-          <ul style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: -8 }}>
-            <PasswordRule met={checks.length} label="At least 8 characters" />
-            <PasswordRule met={checks.letter} label="Contains a letter" />
-            <PasswordRule met={checks.digit} label="Contains a number" />
-          </ul>
+          <div style={{ marginTop: -8 }}>
+            <PasswordRules password={password} />
+          </div>
           <Input
             label="Confirm password"
             required
@@ -150,14 +141,5 @@ export function RegisterPage() {
         </div>
       </form>
     </AuthLayout>
-  )
-}
-
-function PasswordRule({ met, label }: { met: boolean; label: string }) {
-  return (
-    <li style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: met ? 'var(--color-success)' : 'var(--color-text-muted)' }}>
-      <Icon name={met ? 'checkCircle' : 'xCircle'} size={14} />
-      {label}
-    </li>
   )
 }
