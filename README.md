@@ -144,7 +144,7 @@ cp .env.example .env      # fill in DATABASE_URL to match your Postgres install
 npm install
 npx prisma migrate dev
 npx prisma db seed        # creates demo accounts, see .env.example for the list
-npm run dev               # http://localhost:4321
+npm run dev               # http://localhost:4000
 ```
 
 ### 3. Frontend
