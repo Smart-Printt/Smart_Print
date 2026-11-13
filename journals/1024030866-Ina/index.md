@@ -11,4 +11,8 @@ Name: Ina Sharma
    Another Project](./w3-parallel-backend-and-readme-truth.md)
 +  [W4: A Credential in the Docs, My Own Migration Coming Back, and Planning
    the Next Phase](./w4-secrets-in-history-and-next-phase.md)
++  [W5: Production Safety, Race Conditions, and Making Order Creation Safe to
+   Retry](./w5-production-safety-races-and-idempotency.md)
++  [W6: Staff Collection, Missing Files, and Hardening Password
+   Reset](./w6-staff-workflow-and-password-reset.md)
 +  […]
