@@ -17,12 +17,34 @@ export interface InitiatePaymentResult {
   providerReference: string;
 }
 
+// What the browser needs to open a gateway's own payment window (Razorpay
+// Checkout). The mock provider has none: it settles on confirm alone.
+export interface CheckoutDetails {
+  provider: 'razorpay';
+  keyId: string;
+  gatewayOrderId: string;
+  // Smallest currency unit (paise).
+  amount: number;
+  currency: string;
+}
+
+// Returned by the gateway's checkout window after the buyer pays, and
+// verified (signature + gateway lookup) - never trusted as-is.
+export interface GatewayPaymentResponse {
+  razorpayOrderId?: unknown;
+  razorpayPaymentId?: unknown;
+  razorpaySignature?: unknown;
+}
+
 export interface ConfirmPaymentParams {
   providerReference: string;
   // Mock-provider-only test hook - see mockPaymentProvider.ts. A real
   // provider's confirmPayment would instead verify a signed gateway
   // callback/webhook payload and would not accept a client-chosen outcome.
   simulateOutcome?: ProviderOutcome;
+  // Real gateways only: the checkout window's signed result.
+  gatewayResponse?: GatewayPaymentResponse;
+  amount: Prisma.Decimal;
 }
 
 export interface ConfirmPaymentResult {
@@ -45,6 +67,9 @@ export interface InitiateRefundResult {
 
 export interface ConfirmRefundParams {
   providerReference: string;
+  // The payment being refunded (its providerReference) and the amount.
+  originalProviderReference: string;
+  amount: Prisma.Decimal;
   simulateOutcome?: ProviderOutcome;
 }
 
@@ -59,4 +84,7 @@ export interface PaymentProvider {
   confirmPayment(params: ConfirmPaymentParams): Promise<ConfirmPaymentResult>;
   initiateRefund(params: InitiateRefundParams): Promise<InitiateRefundResult>;
   confirmRefund(params: ConfirmRefundParams): Promise<ConfirmRefundResult>;
+  // Checkout details for a PENDING payment, or null when the provider has no
+  // checkout window (mock).
+  checkoutFor(providerReference: string, amount: Prisma.Decimal): CheckoutDetails | null;
 }

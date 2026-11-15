@@ -1,5 +1,7 @@
 import { PaymentMethod, PaymentStatus } from '@prisma/client';
 
+import { CheckoutDetails, GatewayPaymentResponse } from '../services/payments/paymentProvider';
+
 export interface InitiatePaymentInput {
   paymentMethod: unknown;
 }
@@ -9,6 +11,8 @@ export interface InitiatePaymentInput {
 // payload the backend verifies rather than trusts.
 export interface ConfirmPaymentInput {
   simulateOutcome?: unknown;
+  // Razorpay Checkout's signed result (real gateway only).
+  gatewayResponse?: GatewayPaymentResponse;
 }
 
 // Safe, API-facing shape - amount is a string (Decimal.toString()), same
@@ -22,4 +26,7 @@ export interface SafePayment {
   paymentStatus: PaymentStatus;
   createdAt: Date;
   paidAt: Date | null;
+  // Only for a PENDING payment with a real gateway: what the browser needs to
+  // open the gateway's payment window. Absent for the mock provider.
+  checkout?: CheckoutDetails;
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Payment, UserRole } from '@prisma/client';
+import { Order, Payment, UserRole } from '@prisma/client';
 
 import { PAYABLE_ORDER_STATUSES } from '../config/orderPolicy';
 import { env } from '../config/env';
@@ -11,6 +11,7 @@ import * as queueService from './queue.service';
 import * as shopService from './shop.service';
 import { paymentProvider } from './payments';
 import { ProviderOutcome } from './payments/paymentProvider';
+import { RazorpayPaymentProvider } from './payments/razorpayProvider';
 import { ConfirmPaymentInput, InitiatePaymentInput, SafePayment } from '../types/payment.types';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
 
@@ -49,7 +50,10 @@ function assertPayable(status: string, action: string): void {
 }
 
 function toSafePayment(payment: Payment): SafePayment {
+  const checkout =
+    payment.paymentStatus === 'PENDING' ? paymentProvider.checkoutFor(payment.transactionId, payment.amount) : null;
   return {
+    ...(checkout ? { checkout } : {}),
     paymentId: payment.paymentId,
     orderId: payment.orderId,
     amount: payment.amount.toString(),
@@ -142,9 +146,24 @@ export async function confirmPayment(
   const { outcome } = await paymentProvider.confirmPayment({
     providerReference: payment.transactionId,
     simulateOutcome: input.simulateOutcome as ProviderOutcome | undefined,
+    gatewayResponse: input.gatewayResponse,
+    amount: payment.amount,
   });
 
-  const updated = await prisma.$transaction(async (tx) => {
+  return toSafePayment(await finalizePayment(order, payment, outcome, userId));
+}
+
+// Records the provider's verdict on a PENDING payment and, on SUCCESS, moves
+// the order to PAYMENT_CONFIRMED and into the print queue - all in one
+// transaction. Used by the buyer's confirm call and by the gateway webhook.
+async function finalizePayment(
+  order: Order,
+  payment: Payment,
+  outcome: ProviderOutcome,
+  changedByUserId: string,
+): Promise<Payment> {
+  const orderId = order.orderId;
+  return prisma.$transaction(async (tx) => {
     // Lock order: shop -> order -> queue (see orderLocks.ts). The order may
     // have been cancelled (or otherwise moved on) since it was read above -
     // never let a stale payment confirm SUCCESS against an order that is no
@@ -174,7 +193,7 @@ export async function confirmPayment(
         data: {
           orderId,
           status: 'PAYMENT_CONFIRMED',
-          changedByUserId: userId,
+          changedByUserId,
           notes: `Payment confirmed (transaction ${payment.transactionId})`,
         },
       });
@@ -186,15 +205,45 @@ export async function confirmPayment(
         tx,
         order.shopId,
         orderId,
-        userId,
+        changedByUserId,
         'PAYMENT_CONFIRMED',
       );
     }
 
     return tx.payment.findUniqueOrThrow({ where: { paymentId: payment.paymentId } });
   });
+}
 
-  return toSafePayment(updated);
+// Razorpay webhook (payment.captured / order.paid), already signature-checked
+// by the route. Settles our PENDING payment for that Razorpay order if the
+// buyer never came back to confirm it. Returns what happened, for logging.
+export async function settleFromGatewayWebhook(
+  gatewayOrderId: string,
+  gatewayPaymentId: string,
+): Promise<'settled' | 'nothing-pending' | 'not-payable'> {
+  if (!(paymentProvider instanceof RazorpayPaymentProvider)) {
+    return 'nothing-pending';
+  }
+  const payment = await prisma.payment.findFirst({
+    where: { transactionId: gatewayOrderId, paymentStatus: 'PENDING' },
+  });
+  if (!payment) {
+    // Already confirmed by the buyer (the usual case), or not ours.
+    return 'nothing-pending';
+  }
+  const order = await orderService.getOrderRowOrThrow(payment.orderId);
+  const { outcome } = await paymentProvider.settlePayment(gatewayOrderId, gatewayPaymentId, payment.amount);
+  try {
+    await finalizePayment(order, payment, outcome, order.userId);
+  } catch (err) {
+    if (err instanceof ConflictError) {
+      // Confirmed concurrently by the buyer, or the order was cancelled
+      // meanwhile (an admin must refund it from the Razorpay dashboard).
+      return 'not-payable';
+    }
+    throw err;
+  }
+  return 'settled';
 }
 
 // Role-scoped payment visibility, mirroring refund.service.ts's

@@ -6,9 +6,10 @@ import { Icon } from '@/components/ui/Icon'
 import { Spinner } from '@/components/ui/Spinner'
 import { orderApi } from '@/services/orderApi'
 import { paymentApi } from '@/services/paymentApi'
-import type { PaymentMethod, SafeOrder } from '@/types'
+import type { PaymentMethod, SafeOrder, SafePayment } from '@/types'
 import { ApiError } from '@/types/api'
 import { formatMoney } from '@/utils/money'
+import { CheckoutClosedError, openRazorpayCheckout } from '@/utils/razorpayCheckout'
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
   { value: 'UPI', label: 'UPI' },
@@ -25,11 +26,13 @@ interface StepPaymentProps {
   onBack: () => void
 }
 
-// This is a mock/test payment provider (see backend payments service) - the
-// UI never claims a real gateway like Razorpay or a bank connection. The
-// dev-only "simulate a failed payment" control exercises the same
-// simulateOutcome hook the backend already exposes outside production, so
-// the retry flow can be tested without it succeeding by default.
+// Two backends are supported (see backend services/payments):
+//  - mock: no payment window; confirm settles immediately. The dev-only
+//    "simulate a failed payment" control exercises the backend's
+//    simulateOutcome hook so the retry flow can be tested.
+//  - Razorpay (test mode): the started payment carries `checkout` details;
+//    Razorpay's own window takes the payment and its signed result is sent
+//    to the backend, which verifies it before queueing the order.
 export function StepPayment({ order, onPaid, onBack }: StepPaymentProps) {
   const [method, setMethod] = useState<PaymentMethod>('UPI')
   const [phase, setPhase] = useState<Phase>('choosing')
@@ -40,17 +43,30 @@ export function StepPayment({ order, onPaid, onBack }: StepPaymentProps) {
     setPhase('processing')
     setError(null)
     try {
+      let payment: SafePayment | null | undefined
       try {
-        await paymentApi.initiate(order.orderId, method)
+        payment = await paymentApi.initiate(order.orderId, method)
       } catch (err) {
         // 409 = a payment was already started for this order (the user left
-        // this screen between "initiate" and "confirm", or double-clicked).
-        // Carry on and confirm that pending payment instead of looping on
-        // "Payment failed". If the order is not payable at all, confirm
-        // fails too and the failure is shown as before.
+        // this screen between "initiate" and "confirm", closed the payment
+        // window, or double-clicked). Carry on with that pending payment
+        // instead of looping on "Payment failed". If the order is not payable
+        // at all, confirm fails too and the failure is shown as before.
         if (!(err instanceof ApiError && err.status === 409)) throw err
+        payment = await paymentApi.getForOrder(order.orderId)
       }
-      await paymentApi.confirm(order.orderId, simulateFailure ? 'FAILED' : undefined)
+
+      if (payment?.checkout) {
+        const result = await openRazorpayCheckout({
+          checkout: payment.checkout,
+          description: `Order ${order.orderCode}`,
+        })
+        setPhase('processing')
+        await paymentApi.confirm(order.orderId, result)
+      } else {
+        await paymentApi.confirm(order.orderId, simulateFailure ? 'FAILED' : undefined)
+      }
+
       const refreshed = await orderApi.getOne(order.orderId)
       if (refreshed.orderStatus === 'QUEUED') {
         onPaid(refreshed)
@@ -58,9 +74,16 @@ export function StepPayment({ order, onPaid, onBack }: StepPaymentProps) {
         setPhase('failed')
         setError('Payment failed. Please try again.')
       }
-    } catch {
+    } catch (err) {
       setPhase('failed')
-      setError('Payment failed. Please try again.')
+      if (err instanceof CheckoutClosedError) {
+        setError('Payment window closed before paying. Nothing was charged - you can try again.')
+      } else if (err instanceof ApiError && (err.status === 400 || err.status === 503) && err.message) {
+        // e.g. "Cash is not available for online payment" or a gateway outage.
+        setError(`Payment failed: ${err.message}`)
+      } else {
+        setError('Payment failed. Please try again.')
+      }
     }
   }
 
@@ -116,7 +139,7 @@ export function StepPayment({ order, onPaid, onBack }: StepPaymentProps) {
       )}
 
       <p className="text-muted" style={{ fontSize: 12, textAlign: 'center' }}>
-        This is a test payment system for development. No real money is charged.
+        Payments are in test mode. No real money is charged.
       </p>
 
       <div style={{ display: 'flex', gap: 10 }}>

@@ -6,7 +6,7 @@ import { env } from './env';
 // with different settings. See SECURITY_CONFIGURATION.md for every variable.
 
 export const VALID_NODE_ENVS = ['development', 'test', 'production'] as const;
-export const KNOWN_PAYMENT_PROVIDERS = ['mock'] as const;
+export const KNOWN_PAYMENT_PROVIDERS = ['mock', 'razorpay'] as const;
 
 const DEV_DEFAULT_ORIGINS = ['http://localhost:5173', 'http://localhost:5175', 'http://127.0.0.1:5173'];
 

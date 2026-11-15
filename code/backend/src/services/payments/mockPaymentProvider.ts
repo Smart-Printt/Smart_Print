@@ -60,6 +60,10 @@ class MockPaymentProvider implements PaymentProvider {
     assertMockPaymentsAllowed();
     return { outcome: params.simulateOutcome ?? 'SUCCESS' };
   }
+
+  checkoutFor(): null {
+    return null;
+  }
 }
 
 export const mockPaymentProvider: PaymentProvider = new MockPaymentProvider();
