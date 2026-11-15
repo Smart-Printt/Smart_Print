@@ -89,7 +89,8 @@ function sendDocument(
 
 export const download = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const user = requireUser(req);
-  const document = await documentService.getDocumentForDownload(user.userId, user.role, req.params.id);
+  const format = documentService.parseDocumentFormat(req.query.format);
+  const document = await documentService.getDocumentForDownload(user.userId, user.role, req.params.id, format);
   sendDocument(res, document, 'attachment');
 });
 
@@ -97,7 +98,8 @@ export const download = asyncHandler(async (req: AuthenticatedRequest, res: Resp
 // supported type (e.g. PDF) directly instead of forcing a save dialog.
 export const view = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const user = requireUser(req);
-  const document = await documentService.getDocumentForView(user.userId, user.role, req.params.id);
+  const format = documentService.parseDocumentFormat(req.query.format);
+  const document = await documentService.getDocumentForView(user.userId, user.role, req.params.id, format);
   sendDocument(res, document, 'inline');
 });
 

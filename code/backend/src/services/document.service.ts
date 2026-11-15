@@ -10,7 +10,9 @@ import { ConflictError, NotFoundError, ServiceUnavailableError, ValidationError 
 import { generateStorageKey, sanitizeOriginalFileName } from '../utils/fileNaming';
 import { sha256Hex } from '../utils/hash';
 import { validateUploadedFile } from './documents/fileValidation.service';
+import { officeConverter } from './documents/officeConverter';
 import { extractPageCount } from './documents/processors';
+import { extractPdfPageCount } from './documents/processors/pdf.processor';
 
 function toSafeDocument(document: Document): SafeDocument {
   return {
@@ -49,13 +51,41 @@ export async function uploadDocument(
     file.originalName,
     file.declaredMimeType,
   );
-  const { pageCount } = await extractPageCount(validated.fileType, file.buffer);
+  let { pageCount } = await extractPageCount(validated.fileType, file.buffer);
+
+  // Word/Excel/PowerPoint: make a PDF for the shop to print. Its page count is
+  // the real printed count, so it replaces the estimate (or the missing count
+  // for Excel and old .doc/.xls/.ppt files). A failed or skipped conversion is
+  // not an error: the upload continues as before with the original file only.
+  const conversion = await officeConverter.convert(validated.fileType, validated.extension, file.buffer);
+  let printPdf: Buffer | null = null;
+  if (conversion.status === 'converted') {
+    try {
+      pageCount = (await extractPdfPageCount(conversion.pdf)).pageCount ?? pageCount;
+      printPdf = conversion.pdf;
+    } catch {
+      // eslint-disable-next-line no-console
+      console.warn('Converted PDF could not be read; keeping only the original file.');
+    }
+  } else if (conversion.status === 'failed') {
+    // eslint-disable-next-line no-console
+    console.warn(`Office -> PDF conversion failed (${conversion.reason}); keeping only the original file.`);
+  }
 
   const fileHash = sha256Hex(file.buffer);
   const storageKey = generateStorageKey(validated.extension);
+  const printStorageKey = printPdf ? generateStorageKey('.pdf') : null;
   const fileName = sanitizeOriginalFileName(file.originalName);
 
   await storageService.save(storageKey, file.buffer);
+  if (printPdf && printStorageKey) {
+    try {
+      await storageService.save(printStorageKey, printPdf);
+    } catch (err) {
+      await storageService.delete(storageKey).catch(() => undefined);
+      throw err;
+    }
+  }
 
   // Generated up front (rather than letting Prisma default it) so the
   // download-URL reference can be written in the same insert as everything
@@ -70,6 +100,8 @@ export async function uploadDocument(
         fileName,
         fileUrl: buildDownloadUrl(documentId),
         storageKey,
+        printStorageKey,
+        printFileSize: printPdf ? printPdf.length : null,
         fileType: validated.fileType,
         mimeType: validated.mimeType,
         fileSize: file.size,
@@ -83,6 +115,9 @@ export async function uploadDocument(
     // The DB record does not exist (or was rolled back) - do not leave the
     // physical file behind. Safe to retry: delete() is idempotent.
     await storageService.delete(storageKey).catch(() => undefined);
+    if (printStorageKey) {
+      await storageService.delete(printStorageKey).catch(() => undefined);
+    }
     throw err;
   }
 }
@@ -223,13 +258,52 @@ export interface DownloadableDocument {
 // The file is OPENED here, before the controller sends any header, so every
 // failure to get at it is an ordinary error response. Checking exists() and
 // opening later would leave a gap in which the file can vanish.
-async function loadDocumentStream(document: Document): Promise<DownloadableDocument> {
+// Which file to send:
+//   'original' - the file as uploaded
+//   'pdf'      - the PDF made from a Word/Excel/PowerPoint upload (404 if none)
+//   undefined  - shop staff get the PDF when there is one (that is what they
+//                print); everyone else gets the original.
+export type DocumentFormat = 'original' | 'pdf';
+
+export function parseDocumentFormat(value: unknown): DocumentFormat | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'original' || value === 'pdf') return value;
+  throw new ValidationError('format must be "original" or "pdf"');
+}
+
+function pickFile(document: Document, role: UserRole, format: DocumentFormat | undefined) {
+  const wantPdf = format === 'pdf' || (format === undefined && role === 'SHOP_STAFF');
+  if (wantPdf && document.printStorageKey) {
+    return {
+      storageKey: document.printStorageKey,
+      fileName: document.fileName.replace(/\.[^.]*$/, '') + '.pdf',
+      mimeType: 'application/pdf',
+      fileSize: document.printFileSize ?? 0,
+    };
+  }
+  if (format === 'pdf' && document.fileType !== 'PDF') {
+    throw new NotFoundError('There is no PDF version of this document');
+  }
+  return {
+    storageKey: document.storageKey,
+    fileName: document.fileName,
+    mimeType: document.mimeType,
+    fileSize: document.fileSize,
+  };
+}
+
+async function loadDocumentStream(
+  document: Document,
+  role: UserRole,
+  format?: DocumentFormat,
+): Promise<DownloadableDocument> {
   if (document.fileDeletedAt) {
     throw new NotFoundError('This file was deleted automatically after its order was finished');
   }
+  const file = pickFile(document, role, format);
   let stream: Readable;
   try {
-    stream = await storageService.openReadStream(document.storageKey);
+    stream = await storageService.openReadStream(file.storageKey);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       // Metadata exists but the physical file is gone - treat it the same as
@@ -240,9 +314,9 @@ async function loadDocumentStream(document: Document): Promise<DownloadableDocum
   }
 
   return {
-    fileName: document.fileName,
-    mimeType: document.mimeType,
-    fileSize: document.fileSize,
+    fileName: file.fileName,
+    mimeType: file.mimeType,
+    fileSize: file.fileSize,
     stream,
   };
 }
@@ -251,9 +325,10 @@ export async function getDocumentForDownload(
   userId: string,
   role: UserRole,
   documentId: string,
+  format?: DocumentFormat,
 ): Promise<DownloadableDocument> {
   const document = await findAccessibleDocumentOrThrow(userId, role, documentId);
-  return loadDocumentStream(document);
+  return loadDocumentStream(document, role, format);
 }
 
 // Same authorization as download - only the controller's Content-Disposition
@@ -262,9 +337,10 @@ export async function getDocumentForView(
   userId: string,
   role: UserRole,
   documentId: string,
+  format?: DocumentFormat,
 ): Promise<DownloadableDocument> {
   const document = await findAccessibleDocumentOrThrow(userId, role, documentId);
-  return loadDocumentStream(document);
+  return loadDocumentStream(document, role, format);
 }
 
 // A document referenced by any order can never be deleted - the order's
@@ -303,6 +379,9 @@ export async function deleteDocument(userId: string, documentId: string): Promis
   try {
     // delete() is a no-op (not an error) if the file is already missing.
     await storageService.delete(document.storageKey);
+    if (document.printStorageKey) {
+      await storageService.delete(document.printStorageKey);
+    }
   } catch (err) {
     // The document is already gone from the user's point of view; an
     // orphaned file must not turn a successful deletion into an error.

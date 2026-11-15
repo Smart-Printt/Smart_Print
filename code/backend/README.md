@@ -81,6 +81,28 @@ Key and the account's S3 endpoint into `.env`.
   ordered again.
 - A file that an open order still needs is never touched.
 
+## Word / Excel / PowerPoint → PDF
+
+When a `.docx/.doc/.xlsx/.xls/.pptx/.ppt` file is uploaded, the backend runs
+LibreOffice headless (`src/services/documents/officeConverter.ts`) and stores
+a PDF copy next to the original (`documents.print_storage_key`). The PDF's
+page count replaces the estimated one, so Excel and old Office files now get a
+real page count and price too.
+
+- **Shop staff** get the PDF from `/api/documents/:id/view` and `/download`
+  (that is what they print). Students and admins get the original.
+  `?format=pdf` or `?format=original` picks one explicitly.
+- Each conversion has its own temporary folder and LibreOffice profile, a
+  timeout (`OFFICE_CONVERSION_TIMEOUT_SECONDS`, default 60) and at most
+  `OFFICE_CONVERSION_MAX_PARALLEL` (default 2) run at once.
+- If LibreOffice is missing, times out or fails, the upload still succeeds
+  with the original file only (one warning in the log).
+- LibreOffice is installed in the production image (`Dockerfile.prod`). For
+  local development install LibreOffice, or leave it out — conversion is then
+  skipped. Tests use a fake converter (`tests/fixtures/fake-soffice`).
+- The PDF copy is deleted together with the document, and by the automatic
+  clean-up.
+
 ## Project structure
 
 ```
