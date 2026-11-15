@@ -27,3 +27,6 @@ process.env.RATE_LIMIT_ENABLED = 'false';
 // src/services/email/index.ts). tests/passwordReset.test.ts covers the
 // production configuration checks separately.
 process.env.EMAIL_PROVIDER = 'mock';
+
+// Tests always use local disk storage, never a real bucket.
+process.env.STORAGE_PROVIDER = 'local';

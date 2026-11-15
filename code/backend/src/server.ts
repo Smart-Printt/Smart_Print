@@ -15,6 +15,10 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log('Database connection established.');
 
+  // Deletes files that are no longer needed (see fileCleanup.service.ts).
+  const { startFileCleanupJob } = await import('./services/fileCleanup.service');
+  startFileCleanupJob();
+
   const app = createApp();
   const label = process.env.APP_ENV ? `${env.nodeEnv}, ${process.env.APP_ENV}` : env.nodeEnv;
 
