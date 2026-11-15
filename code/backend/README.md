@@ -144,6 +144,41 @@ preflight:
 2. `npx prisma migrate resolve --rolled-back <migration_name>`, then
    `npx prisma migrate deploy` again.
 
+## Payments (Razorpay test mode)
+
+`PAYMENT_PROVIDER` picks the provider (`src/services/payments`):
+
+- `mock` (default) — simulated, for development and tests. Refused in production.
+- `razorpay` — real gateway. With **test keys** (`rzp_test_...`) no real money moves.
+
+How a Razorpay payment works:
+
+1. `POST /api/orders/:id/payment` creates a Razorpay order for the order's
+   server-computed amount and returns `payment.checkout` (key id, Razorpay
+   order id, amount in paise).
+2. The frontend opens Razorpay Checkout with it. After paying, Checkout returns
+   `razorpay_order_id`, `razorpay_payment_id`, `razorpay_signature`.
+3. `POST /api/orders/:id/payment/confirm` with `razorpayOrderId`,
+   `razorpayPaymentId`, `razorpaySignature`. The backend checks the signature,
+   then asks Razorpay for the payment and accepts it only if it belongs to
+   this order, is for the full amount and is captured (it captures an
+   authorized payment itself). Then the order is queued.
+4. `POST /api/payments/razorpay/webhook` (`payment.captured`, `order.paid`)
+   does the same for a student who paid but closed the tab. Repeated events
+   change nothing.
+
+Refunds: the student's request only records a reference; the money goes back
+through Razorpay when an admin processes the refund. Sending is idempotent (the
+refund carries our reference as its receipt, and an existing one is reused).
+
+**Setup (one time):** razorpay.com → sign up → switch the dashboard to *Test
+Mode* → *Account & Settings → API Keys* → generate. Put the key id and secret
+in `.env` with `PAYMENT_PROVIDER=razorpay`. For the hosted site also add a
+webhook (*Webhooks → Add*) to `https://<site>/api/payments/razorpay/webhook`
+with events `payment.captured` and `order.paid`, and set the same secret as
+`RAZORPAY_WEBHOOK_SECRET`. Test card: `4111 1111 1111 1111`, any future
+expiry, any CVV; test UPI id: `success@razorpay`.
+
 ## Order idempotency (`Idempotency-Key`)
 
 `POST /api/orders` accepts an optional `Idempotency-Key` header (8-128

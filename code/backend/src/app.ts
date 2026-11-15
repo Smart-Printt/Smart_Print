@@ -14,6 +14,7 @@ import { documentRouter } from './routes/document.routes';
 import { healthRouter } from './routes/health.route';
 import { orderRouter } from './routes/order.routes';
 import { paymentRouter } from './routes/payment.routes';
+import { razorpayWebhookRouter } from './routes/razorpayWebhook.routes';
 import { pricingRouter } from './routes/pricing.routes';
 import { queueRouter } from './routes/queue.routes';
 import { refundRouter } from './routes/refund.routes';
@@ -46,6 +47,9 @@ export function createApp(options: CreateAppOptions = {}): Application {
   // removal of X-Powered-By.
   app.use(helmet());
   app.use(createCorsMiddleware(corsAllowedOrigins));
+  // Needs the raw request body to check Razorpay's signature, so it is
+  // mounted before express.json().
+  app.use('/api/payments', razorpayWebhookRouter);
   app.use(express.json());
 
   // Rate limits run before the routers that own these paths. Each handler

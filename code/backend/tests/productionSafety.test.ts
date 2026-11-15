@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
+import { Prisma } from '@prisma/client';
+
 import {
   SecurityConfig,
   assertStartupSafety,
@@ -158,7 +160,7 @@ describe('security configuration parsing', () => {
 
 describe('mock payment provider second safety net', () => {
   it('works in the test environment', async () => {
-    await expect(mockPaymentProvider.confirmPayment({ providerReference: 'TXN-1' })).resolves.toEqual({
+    await expect(mockPaymentProvider.confirmPayment({ providerReference: 'TXN-1', amount: new Prisma.Decimal(10) })).resolves.toEqual({
       outcome: 'SUCCESS',
     });
   });
@@ -168,9 +170,13 @@ describe('mock payment provider second safety net', () => {
     process.env.NODE_ENV = nodeEnv;
     try {
       await expect(mockPaymentProvider.initiatePayment({} as never)).rejects.toThrow(/mock payment provider is disabled/);
-      await expect(mockPaymentProvider.confirmPayment({ providerReference: 'x' })).rejects.toThrow(/disabled/);
+      await expect(mockPaymentProvider.confirmPayment({ providerReference: 'x', amount: new Prisma.Decimal(10) })).rejects.toThrow(/disabled/);
       await expect(mockPaymentProvider.initiateRefund({} as never)).rejects.toThrow(/disabled/);
-      await expect(mockPaymentProvider.confirmRefund({ providerReference: 'x' })).rejects.toThrow(/disabled/);
+      await expect(mockPaymentProvider.confirmRefund({
+        providerReference: 'x',
+        originalProviderReference: 'y',
+        amount: new Prisma.Decimal(10),
+      })).rejects.toThrow(/disabled/);
     } finally {
       process.env.NODE_ENV = saved;
     }
