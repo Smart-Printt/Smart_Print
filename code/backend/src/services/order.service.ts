@@ -268,9 +268,15 @@ export async function createOrder(
       // gone is reported as 404 instead of surfacing as a foreign-key failure.
       const documentIds = [...new Set(finalItems.map((item) => item.documentId))].sort();
       const lockedDocuments = await tx.$queryRaw<
-        { document_id: string; user_id: string; storage_key: string; file_name: string }[]
+        {
+          document_id: string;
+          user_id: string;
+          storage_key: string;
+          file_name: string;
+          file_deleted_at: Date | null;
+        }[]
       >`
-        SELECT document_id, user_id, storage_key, file_name FROM documents
+        SELECT document_id, user_id, storage_key, file_name, file_deleted_at FROM documents
         WHERE document_id IN (${Prisma.join(documentIds)})
         ORDER BY document_id
         FOR SHARE`;
@@ -292,7 +298,11 @@ export async function createOrder(
       // transaction, so no order, queue entry, payment or history row is
       // created for an unprintable order.
       await documentService.assertFilesAvailable(
-        lockedDocuments.map((row) => ({ fileName: row.file_name, storageKey: row.storage_key })),
+        lockedDocuments.map((row) => ({
+          fileName: row.file_name,
+          storageKey: row.storage_key,
+          fileDeletedAt: row.file_deleted_at,
+        })),
       );
 
       await tx.order.create({

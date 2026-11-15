@@ -88,8 +88,10 @@ export async function uploadDocument(
 }
 
 export async function listDocumentsForUser(userId: string): Promise<SafeDocument[]> {
+  // Documents whose file was removed by the automatic clean-up are hidden:
+  // they can no longer be printed, and their orders still show the name.
   const documents = await prisma.document.findMany({
-    where: { userId },
+    where: { userId, fileDeletedAt: null },
     orderBy: { uploadedAt: 'desc' },
   });
   return documents.map(toSafeDocument);
@@ -180,11 +182,17 @@ const MAX_NAMES_IN_MESSAGE = 5;
 // Nothing is deleted or modified: a missing file leaves the document row, and
 // any order that already references it, exactly as they were.
 export async function assertFilesAvailable(
-  documents: { fileName: string; storageKey: string }[],
+  documents: { fileName: string; storageKey: string; fileDeletedAt?: Date | null }[],
 ): Promise<void> {
   let states: Awaited<ReturnType<typeof storageService.checkAvailability>>[];
   try {
-    states = await Promise.all(documents.map((d) => storageService.checkAvailability(d.storageKey)));
+    // A file the clean-up job has removed (or is about to remove) is missing,
+    // whatever storage says right now.
+    states = await Promise.all(
+      documents.map((d) =>
+        d.fileDeletedAt ? Promise.resolve('missing' as const) : storageService.checkAvailability(d.storageKey),
+      ),
+    );
   } catch (err) {
     // Log the error code only: storage errors can embed file paths.
     // eslint-disable-next-line no-console
@@ -216,6 +224,9 @@ export interface DownloadableDocument {
 // failure to get at it is an ordinary error response. Checking exists() and
 // opening later would leave a gap in which the file can vanish.
 async function loadDocumentStream(document: Document): Promise<DownloadableDocument> {
+  if (document.fileDeletedAt) {
+    throw new NotFoundError('This file was deleted automatically after its order was finished');
+  }
   let stream: Readable;
   try {
     stream = await storageService.openReadStream(document.storageKey);
