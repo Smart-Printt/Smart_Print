@@ -27,9 +27,10 @@ export const initiate = asyncHandler(async (req: AuthenticatedRequest, res: Resp
 
 export const confirm = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const userId = requireUserId(req);
-  const { simulateOutcome } = req.body ?? {};
+  const { simulateOutcome, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body ?? {};
   const payment = await paymentService.confirmPayment(userId, req.params.orderId, {
     simulateOutcome,
+    gatewayResponse: { razorpayOrderId, razorpayPaymentId, razorpaySignature },
   });
   res.status(200).json({ success: true, data: { payment } });
 });

@@ -14,7 +14,9 @@ All values below are placeholders. Never commit real secrets.
 |---|---|---|---|
 | `NODE_ENV` | `development` (only when running from TypeScript sources) | exactly `development`, `test` or `production` | Selects behaviour. Any other value refuses to start. |
 | `APP_ENV` | unset | free text, e.g. `staging` | Label shown in the startup log. Never changes any check. |
-| `PAYMENT_PROVIDER` | `mock` | `mock` | Payment provider. `mock` is simulated and is refused in production. |
+| `PAYMENT_PROVIDER` | `mock` | `mock` | Payment provider: `mock` (simulated, refused in production) or `razorpay`. |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | none | none | Needed for `razorpay`. `rzp_test_...` keys never move real money. |
+| `RAZORPAY_WEBHOOK_SECRET` | none | none | Needed for `razorpay` in production (the webhook queues orders whose buyer closed the tab). |
 | `CORS_ALLOWED_ORIGINS` | development/test: `FRONTEND_URL`, `http://localhost:5173`, `http://localhost:5175`, `http://127.0.0.1:5173`; production: none | comma-separated exact origins (`scheme://host[:port]`) | Browser origins allowed to call the API. |
 | `TRUST_PROXY` | `false` | `false`, `0`, or a positive number of proxy hops | Needed behind a reverse proxy or load balancer so client IPs (and per-IP limits) are correct. `true` is rejected because it lets clients spoof their IP. |
 | `RATE_LIMIT_ENABLED` | `true` | `true`, `false` | Turns rate limiting on or off. `false` is refused in production. |
@@ -36,9 +38,9 @@ All values below are placeholders. Never commit real secrets.
 With `NODE_ENV=production`, the server refuses to start, before connecting to
 the database, unless all of the following hold:
 
-1. `PAYMENT_PROVIDER` is not `mock`. There is no override. Until a real
-   provider is integrated, a production deployment cannot start; this is
-   intentional.
+1. `PAYMENT_PROVIDER` is not `mock`. There is no override. Use `razorpay`
+   (test keys are fine for the test website); it also needs
+   `RAZORPAY_WEBHOOK_SECRET` in production.
 2. `CORS_ALLOWED_ORIGINS` lists at least one origin, and every origin uses
    `https://`.
 3. `RATE_LIMIT_ENABLED` is not `false`.
@@ -162,7 +164,10 @@ NODE_ENV=production
 APP_ENV=staging
 DATABASE_URL=postgresql://USERNAME:PASSWORD@HOST:5432/DATABASE
 JWT_SECRET=<long random value>
-PAYMENT_PROVIDER=<real provider, once integrated>
+PAYMENT_PROVIDER=razorpay
+RAZORPAY_KEY_ID=<rzp_test_... or rzp_live_...>
+RAZORPAY_KEY_SECRET=<key secret>
+RAZORPAY_WEBHOOK_SECRET=<webhook secret>
 CORS_ALLOWED_ORIGINS=https://smartprint.example.edu
 TRUST_PROXY=1
 FRONTEND_URL=https://smartprint.example.edu

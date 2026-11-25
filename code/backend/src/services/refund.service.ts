@@ -134,8 +134,11 @@ export async function processRefund(orderId: string, input: ProcessRefundInput):
     throw new ConflictError('This refund has already been processed');
   }
 
+  const payment = await prisma.payment.findUniqueOrThrow({ where: { paymentId: refund.paymentId } });
   const { outcome } = await paymentProvider.confirmRefund({
     providerReference: refund.refundTransactionId,
+    originalProviderReference: payment.transactionId,
+    amount: refund.refundAmount,
     simulateOutcome: input.simulateOutcome as ProviderOutcome | undefined,
   });
   // RefundStatus (PROCESSED/FAILED) is a different vocabulary than the

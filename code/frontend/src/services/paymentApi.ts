@@ -1,5 +1,5 @@
 import { api } from './apiClient'
-import type { ApiSuccess, PaymentMethod, SafePayment } from '@/types'
+import type { ApiSuccess, PaymentMethod, RazorpayCheckoutResult, SafePayment } from '@/types'
 import { ApiError } from '@/types/api'
 
 export const paymentApi = {
@@ -10,11 +10,13 @@ export const paymentApi = {
     return res.data.payment
   },
 
-  async confirm(orderId: string, simulateOutcome?: 'SUCCESS' | 'FAILED'): Promise<SafePayment> {
-    const res = await api.post<ApiSuccess<{ payment: SafePayment }>>(
-      `/orders/${orderId}/payment/confirm`,
-      simulateOutcome ? { simulateOutcome } : undefined,
-    )
+  // Mock provider: optional simulateOutcome. Razorpay: the Checkout result.
+  async confirm(
+    orderId: string,
+    outcome?: 'SUCCESS' | 'FAILED' | RazorpayCheckoutResult,
+  ): Promise<SafePayment> {
+    const body = typeof outcome === 'string' ? { simulateOutcome: outcome } : outcome
+    const res = await api.post<ApiSuccess<{ payment: SafePayment }>>(`/orders/${orderId}/payment/confirm`, body)
     return res.data.payment
   },
 
