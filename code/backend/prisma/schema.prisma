@@ -183,30 +183,35 @@ model RefreshToken {
 }
 
 model Document {
-  documentId    String           @id @default(uuid()) @map("document_id")
-  userId        String           @map("user_id")
-  fileName      String           @map("file_name")
-  fileUrl       String           @map("file_url")
+  documentId      String           @id @default(uuid()) @map("document_id")
+  userId          String           @map("user_id")
+  fileName        String           @map("file_name")
+  fileUrl         String           @map("file_url")
   // Internal storage identifier (a generated filename under UPLOAD_DIR) -
   // never the original filename and never a client-supplied path.
-  storageKey    String           @unique @map("storage_key")
-  fileType      DocumentFileType @map("file_type")
-  mimeType      String           @map("mime_type")
-  fileSize      Int              @map("file_size")
+  storageKey      String           @unique @map("storage_key")
+  fileType        DocumentFileType @map("file_type")
+  mimeType        String           @map("mime_type")
+  fileSize        Int              @map("file_size")
   // SHA-256 hex digest. Intentionally NOT unique: two different users may
   // legitimately upload byte-identical files.
-  fileHash      String           @map("file_hash")
+  fileHash        String           @map("file_hash")
   // Nullable: some formats (XLSX, legacy DOC/XLS/PPT, and DOCX without a
   // cached Word page count) cannot be given a reliable printable page count
   // without full layout rendering - see src/services/documents/processors.
   // This is distinct from the future OrderDocument.printPageCount, which
   // will reflect order-time print settings rather than the source document.
-  pageCount     Int?             @map("page_count")
-  uploadedAt    DateTime         @default(now()) @map("uploaded_at")
+  pageCount       Int?             @map("page_count")
+  uploadedAt      DateTime         @default(now()) @map("uploaded_at")
   // Set when the automatic clean-up removed the stored file because every
   // order using it is finished (collected or cancelled). The row stays so
   // order history still shows the file name; the file itself is gone.
-  fileDeletedAt DateTime?        @map("file_deleted_at")
+  fileDeletedAt   DateTime?        @map("file_deleted_at")
+  // PDF made from a Word/Excel/PowerPoint upload (LibreOffice), stored next
+  // to the original. Shop staff get this one to print. NULL for PDFs/images,
+  // or when conversion was skipped or failed.
+  printStorageKey String?          @unique @map("print_storage_key")
+  printFileSize   Int?             @map("print_file_size")
 
   user           User            @relation(fields: [userId], references: [userId], onDelete: Cascade)
   orderDocuments OrderDocument[]

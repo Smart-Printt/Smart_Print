@@ -57,6 +57,14 @@ export const env = {
       keyPrefix: process.env.S3_KEY_PREFIX ?? 'documents/',
     },
   },
+  // Word/Excel/PowerPoint -> PDF with LibreOffice (services/documents/
+  // officeConverter.ts). Skipped automatically when LibreOffice is missing.
+  officeConversion: {
+    enabled: (process.env.OFFICE_CONVERSION_ENABLED ?? 'true').trim().toLowerCase() !== 'false',
+    command: [process.env.SOFFICE_PATH?.trim() || 'soffice'],
+    timeoutMs: Number(process.env.OFFICE_CONVERSION_TIMEOUT_SECONDS ?? 60) * 1000,
+    maxParallel: Number(process.env.OFFICE_CONVERSION_MAX_PARALLEL ?? 2),
+  },
   // Automatic file clean-up (services/fileCleanup.service.ts). Hours are how
   // long a file is kept AFTER it stops being needed. 0 interval = job off.
   fileCleanup: {

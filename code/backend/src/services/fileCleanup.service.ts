@@ -53,11 +53,19 @@ function logFailure(what: string, documentId: string, err: unknown): void {
   console.error(`File clean-up: could not ${what} for document ${documentId}:`, e?.code ?? e?.name ?? 'error');
 }
 
+// The uploaded file and, for Office uploads, the PDF made from it.
+async function deleteStoredFiles(row: { storage_key: string; print_storage_key: string | null }): Promise<void> {
+  await storageService.delete(row.storage_key);
+  if (row.print_storage_key) {
+    await storageService.delete(row.print_storage_key);
+  }
+}
+
 async function deleteUnusedDocument(documentId: string, cutoff: Date): Promise<boolean> {
   return prisma.$transaction(
     async (tx) => {
-      const locked = await tx.$queryRaw<{ storage_key: string; uploaded_at: Date }[]>`
-        SELECT storage_key, uploaded_at FROM documents WHERE document_id = ${documentId} FOR UPDATE`;
+      const locked = await tx.$queryRaw<{ storage_key: string; print_storage_key: string | null; uploaded_at: Date }[]>`
+        SELECT storage_key, print_storage_key, uploaded_at FROM documents WHERE document_id = ${documentId} FOR UPDATE`;
       if (locked.length === 0 || locked[0].uploaded_at >= cutoff) {
         return false;
       }
@@ -65,7 +73,7 @@ async function deleteUnusedDocument(documentId: string, cutoff: Date): Promise<b
       if (used) {
         return false;
       }
-      await storageService.delete(locked[0].storage_key);
+      await deleteStoredFiles(locked[0]);
       await tx.document.delete({ where: { documentId } });
       return true;
     },
@@ -76,8 +84,11 @@ async function deleteUnusedDocument(documentId: string, cutoff: Date): Promise<b
 async function deleteFinishedOrderFile(documentId: string, cutoff: Date, now: Date): Promise<boolean> {
   return prisma.$transaction(
     async (tx) => {
-      const locked = await tx.$queryRaw<{ storage_key: string; file_deleted_at: Date | null }[]>`
-        SELECT storage_key, file_deleted_at FROM documents WHERE document_id = ${documentId} FOR UPDATE`;
+      const locked = await tx.$queryRaw<
+        { storage_key: string; print_storage_key: string | null; file_deleted_at: Date | null }[]
+      >`
+        SELECT storage_key, print_storage_key, file_deleted_at FROM documents
+        WHERE document_id = ${documentId} FOR UPDATE`;
       if (locked.length === 0 || locked[0].file_deleted_at) {
         return false;
       }
@@ -94,7 +105,7 @@ async function deleteFinishedOrderFile(documentId: string, cutoff: Date, now: Da
       if (stillNeeded) {
         return false;
       }
-      await storageService.delete(locked[0].storage_key);
+      await deleteStoredFiles(locked[0]);
       await tx.document.update({ where: { documentId }, data: { fileDeletedAt: now } });
       return true;
     },
