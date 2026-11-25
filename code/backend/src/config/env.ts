@@ -19,7 +19,7 @@ const emailPort = process.env.EMAIL_PORT ? Number(process.env.EMAIL_PORT) : unde
 
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
-  port: Number(process.env.PORT ?? 4000),
+  port: Number(process.env.PORT ?? 4321),
   databaseUrl: required('DATABASE_URL'),
   jwtSecret: required('JWT_SECRET'),
   // Access tokens are short-lived; a long-lived refresh token (below) gets a
@@ -72,6 +72,9 @@ export const env = {
     finishedOrderRetentionHours: Number(process.env.FINISHED_ORDER_FILE_RETENTION_HOURS ?? 24),
     unusedDocumentRetentionHours: Number(process.env.UNUSED_DOCUMENT_RETENTION_HOURS ?? 24),
   },
+  // Optional. Without a key the print assistant uses its rule-based parser.
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
+  assistantModel: process.env.ASSISTANT_MODEL ?? 'claude-haiku-5-5',
   email: {
     // Optional explicit provider: smtp | console | mock (see services/email/index.ts).
     // Unset = automatic: SMTP when fully configured, otherwise the dev console.

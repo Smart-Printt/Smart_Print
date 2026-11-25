@@ -30,7 +30,7 @@ npm run dev
 Verify the server is up:
 
 ```bash
-curl http://localhost:4000/health
+curl http://localhost:4321/health
 ```
 
 > npm 11+ blocks dependency install scripts by default. Prisma needs its
@@ -44,7 +44,7 @@ curl http://localhost:4000/health
 See `.env.example`:
 
 - `DATABASE_URL` — PostgreSQL connection string
-- `PORT` — server port (default 4000)
+- `PORT` — server port (default 4321)
 - `NODE_ENV` — `development` / `production`
 
 ## File storage

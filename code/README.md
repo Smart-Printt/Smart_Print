@@ -32,7 +32,7 @@ shape) → `src/services/*.service.ts` (business logic and Prisma calls).
 
 | What | Local / dev Docker | Production stack |
 |---|---|---|
-| Backend API | 4000 | 4000 (inside Docker only) |
+| Backend API | 4321 (the `PORT` default; in dev Docker the host's 4321 maps to the container's 4000) | 4000 (inside Docker only) |
 | Frontend | 5173 (Vite) | 8080 → nginx on 80 (`FRONTEND_PORT`) |
 | PostgreSQL | 5432 native, 5433 for the dev Docker db | inside Docker only |
 | Test database | `smartprint_test` (see `backend/.env.test.example`) | — |
@@ -47,7 +47,7 @@ docker compose run --rm backend npm run prisma:seed
 docker compose up -d
 ```
 
-- Backend: http://localhost:4000 (health check at `/health`)
+- Backend: http://localhost:4321 (health check at `/health`)
 - Frontend: http://localhost:5173
 
 Seed data creates:
@@ -105,3 +105,40 @@ provider is integrated. See `backend/SECURITY_CONFIGURATION.md`.
   transaction that moves the order to `QUEUED`.
 - Authorization never trusts a `shopId`/`userId` from the client — shop staff
   access comes from the verified user record.
+- **order_code** (e.g. `SP-LXK3F9-A1B2`) is a random, human-readable display
+  identifier (time + random part, `utils/orderCode.ts`); it is unique in the
+  database but never used for ordering. **queue_number** (the token students
+  see) is `MAX(queue_number) + 1` per shop, computed while the shop's row is
+  locked (`SELECT ... FOR UPDATE` on `print_shops`), so two orders paid at the
+  same moment for the same shop can't get the same token.
+- Pricing/finishing rules use an effective-dated "supersede" pattern: creating
+  a new rule for a given combination closes out any currently-open rule in the
+  same transaction, so there is never more than one active rule per
+  combination.
+- **Live queue updates**: students' order pages receive Server-Sent Events
+  (`GET /api/orders/:orderId/queue/stream`) when their shop's queue changes,
+  with a polling fallback. The notification bus is in-process
+  (`services/queueEvents.ts`); running several API instances would need
+  PostgreSQL `LISTEN/NOTIFY` or Redis instead.
+- **AI wait-time prediction** (`services/waitModel.ts`): Bayesian linear
+  regression that learns each shop's real printer speed (set-up time per job,
+  minutes per B&W page, per colour page, per binding) from its completed
+  orders. A student's wait is the sum of the predicted times of the orders
+  ahead plus what is left of the one printing, returned with an 80% range and
+  the number of orders it has learned from. It starts from typical speeds with
+  a wide uncertainty, so it works with no history and sharpens as the shop
+  completes orders. It only informs students: queue order stays strictly FIFO.
+  Trained models are cached per shop for 60 s and re-learned when a print
+  completes.
+  **Safeguards:** if the order printing now runs far past its own predicted
+  range (a jam) the student sees "Taking longer than usual", and if orders wait
+  with nothing printing for 15 minutes they see "Waiting for the shop to start"
+  - in both cases no number is shown, because the model assumes a shop working
+  normally. Set `WAIT_ESTIMATES_ENABLED=false` in the backend `.env` to switch
+  estimates off everywhere.
+- **QR pickup**: a READY order shows a QR code that encodes its order code.
+  Staff look it up with `GET /api/orders/by-code/:orderCode` (scoped to their
+  own shop) and confirm the handover from the dashboard's Pickup desk.
+- **Admin analytics** (`GET /api/admin/analytics?days=7|30|90`, ADMIN only):
+  orders, revenue net of refunds, busiest hours, per-shop load and median
+  wait/print times, computed in SQL in the Asia/Kolkata timezone.

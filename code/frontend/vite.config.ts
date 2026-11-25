@@ -4,10 +4,12 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
 
 // Where the dev server forwards /api calls. Outside Docker the backend is on
-// localhost:4000 (the PORT in backend/.env.example). docker-compose.yml sets
+// localhost:4321 (the PORT default in backend/src/config/env.ts and
+// backend/.env.example). docker-compose.yml sets
 // VITE_PROXY_TARGET=http://backend:4000, because inside the frontend
-// container "localhost" is the container itself, not the backend.
-const apiTarget = process.env.VITE_PROXY_TARGET ?? 'http://localhost:4000'
+// container "localhost" is the container itself, and the backend container
+// listens on 4000 (the host's 4321 is mapped to it).
+const apiTarget = process.env.VITE_PROXY_TARGET ?? 'http://localhost:4321'
 
 export default defineConfig({
   plugins: [react()],
