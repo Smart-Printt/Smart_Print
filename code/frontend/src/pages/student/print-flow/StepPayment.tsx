@@ -15,7 +15,6 @@ const METHODS: { value: PaymentMethod; label: string }[] = [
   { value: 'UPI', label: 'UPI' },
   { value: 'CARD', label: 'Card' },
   { value: 'WALLET', label: 'Wallet' },
-  { value: 'CASH', label: 'Cash on pickup' },
 ]
 
 type Phase = 'choosing' | 'processing' | 'failed'
