@@ -75,6 +75,20 @@ export function StepPayment({ order, onPaid, onBack }: StepPaymentProps) {
         setError('Payment failed. Please try again.')
       }
     } catch (err) {
+      // The gateway's webhook may have settled the payment just before our own
+      // confirm call arrived (so confirm errors although the order is paid).
+      // Check the order before showing a failure.
+      if (!(err instanceof CheckoutClosedError)) {
+        try {
+          const latest = await orderApi.getOne(order.orderId)
+          if (latest.orderStatus === 'QUEUED') {
+            onPaid(latest)
+            return
+          }
+        } catch {
+          // fall through to the normal failure message
+        }
+      }
       setPhase('failed')
       if (err instanceof CheckoutClosedError) {
         setError('Payment window closed before paying. Nothing was charged - you can try again.')
