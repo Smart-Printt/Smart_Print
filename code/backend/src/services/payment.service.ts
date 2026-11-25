@@ -137,6 +137,12 @@ export async function confirmPayment(
     orderBy: { createdAt: 'desc' },
   });
   if (!payment) {
+    // The Razorpay webhook may have settled it a moment before the buyer's
+    // own confirm call arrived. That is a success, not an error.
+    const settled = await findSettledPayment(orderId);
+    if (settled) {
+      return toSafePayment(settled);
+    }
     throw new NotFoundError('No pending payment found for this order');
   }
 
@@ -150,7 +156,25 @@ export async function confirmPayment(
     amount: payment.amount,
   });
 
-  return toSafePayment(await finalizePayment(order, payment, outcome, userId));
+  try {
+    return toSafePayment(await finalizePayment(order, payment, outcome, userId));
+  } catch (err) {
+    // Lost a race with the webhook: if the payment is now SUCCESS, report that.
+    if (err instanceof ConflictError) {
+      const settled = await findSettledPayment(orderId);
+      if (settled) {
+        return toSafePayment(settled);
+      }
+    }
+    throw err;
+  }
+}
+
+function findSettledPayment(orderId: string): Promise<Payment | null> {
+  return prisma.payment.findFirst({
+    where: { orderId, paymentStatus: 'SUCCESS' },
+    orderBy: { createdAt: 'desc' },
+  });
 }
 
 // Records the provider's verdict on a PENDING payment and, on SUCCESS, moves
