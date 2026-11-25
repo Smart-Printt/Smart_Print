@@ -104,6 +104,26 @@ services:
     depends_on:
       - backend
 
+  # HTTPS for the test website (optional). Start with --profile https and set
+  # DOMAIN in .env.production. See DEPLOYMENT.md.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["https"]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - smartprint_caddy_data:/data
+      - smartprint_caddy_config:/config
+    depends_on:
+      - frontend
+
 volumes:
+  smartprint_caddy_data:
+  smartprint_caddy_config:
   smartprint_prod_db_data:
   smartprint_prod_uploads:
