@@ -117,7 +117,7 @@ export function StepPayment({ order, onPaid, onBack }: StepPaymentProps) {
 
       <div>
         <p style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 10 }}>Payment method</p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div className="option-grid">
           {METHODS.map((m) => (
             <button
               key={m.value}

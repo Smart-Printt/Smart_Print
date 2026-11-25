@@ -163,6 +163,22 @@ export function downloadUrl(path: string): string {
   return `${BASE_URL}${path}`
 }
 
+// Opens a long-lived response (Server-Sent Events). EventSource cannot send an
+// Authorization header, so the stream is read with fetch instead. Unlike
+// request(), a 401 here does NOT sign the user out - the stream is a
+// nice-to-have and the page's normal requests handle expiry themselves.
+export async function fetchAuthorizedStream(path: string, signal: AbortSignal): Promise<Response> {
+  const token = getToken()
+  const response = await fetch(`${BASE_URL}${path}`, {
+    headers: { Accept: 'text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    signal,
+  })
+  if (!response.ok || !response.body) {
+    throw new ApiError(response.status, 'Could not open the live connection.')
+  }
+  return response
+}
+
 export async function fetchAuthorizedBlob(path: string): Promise<Blob> {
   const response = await sendWithRefresh(path, {})
   if (!response.ok) {

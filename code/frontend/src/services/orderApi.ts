@@ -49,6 +49,15 @@ export const orderApi = {
     return res.data.order
   },
 
+  // Pickup scan: staff/admin look an order up by the code in its QR code.
+  async getByCode(orderCode: string, signal?: AbortSignal): Promise<SafeOrder> {
+    const res = await api.get<ApiSuccess<{ order: SafeOrder }>>(
+      `/orders/by-code/${encodeURIComponent(orderCode.trim())}`,
+      signal,
+    )
+    return res.data.order
+  },
+
   async cancel(orderId: string, reason?: string): Promise<SafeOrder> {
     const res = await api.patch<ApiSuccess<{ order: SafeOrder }>>(`/orders/${orderId}/cancel`, {
       reason,

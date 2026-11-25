@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorState, StateBlock } from '@/components/ui/StateBlock'
 import { OrderDocumentList } from '@/components/staff/OrderDocumentList'
+import { PickupScanner } from '@/components/staff/PickupScanner'
 import { PageHeader } from '@/layouts/AppShell'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/hooks/useToast'
@@ -242,6 +243,8 @@ export function StaffDashboardPage() {
           </div>
         }
       />
+
+      <PickupScanner onCollected={() => void load()} />
 
       {current ? (
         <Card padded style={{ marginBottom: 20, background: 'var(--color-primary-soft)', border: 'none' }}>

@@ -4,8 +4,10 @@ import { useSearchParams } from 'react-router-dom'
 import { Stepper } from '@/components/ui/Stepper'
 import { PageHeader } from '@/layouts/AppShell'
 import { documentApi } from '@/services/documentApi'
+import { shopApi } from '@/services/shopApi'
 import { createIdempotencyKey } from '@/utils/idempotencyKey'
-import type { PricingPreviewResult, SafeDocument, SafeOrder, SafeShop } from '@/types'
+import type { PricingPreviewResult, PrintAssistantResult, SafeDocument, SafeOrder, SafeShop } from '@/types'
+import { PrintAssistantPanel } from './PrintAssistantPanel'
 import { StepDocument } from './StepDocument'
 import { StepPayment } from './StepPayment'
 import { StepQueue } from './StepQueue'
@@ -74,6 +76,36 @@ export function PrintFlowPage() {
     )
   }
 
+  // Applies the assistant's answer to every selected document and, when it
+  // chose a shop, jumps to the Settings step so the student can review it.
+  // Settings it did not mention keep their current values.
+  async function handleAssistantApply(result: PrintAssistantResult) {
+    const { settings, finishingRuleId } = result
+    setItems((current) =>
+      current.map((item) => ({
+        ...item,
+        settings: {
+          ...item.settings,
+          ...(settings.printType && { printType: settings.printType }),
+          ...(settings.paperSize && { paperSize: settings.paperSize }),
+          ...(settings.sides && { sides: settings.sides }),
+          ...(settings.copies && { copies: settings.copies }),
+          ...(settings.pageRange && { pageRangeMode: 'custom' as const, pageRange: settings.pageRange }),
+          ...(settings.specialInstructions && { specialInstructions: settings.specialInstructions }),
+          ...(settings.finishingType && {
+            finishingType: settings.finishingType,
+            finishingRuleId: finishingRuleId,
+          }),
+        },
+      })),
+    )
+    if (result.shopId) {
+      const chosen = await shopApi.getOne(result.shopId)
+      setShop(chosen)
+      setStepIndex(2)
+    }
+  }
+
   function handleOrderCreated(created: SafeOrder) {
     setOrder(created)
     // A FACULTY order at the CSE Department Faculty Printer skips payment
@@ -105,6 +137,15 @@ export function PrintFlowPage() {
             onRemove={handleRemoveDocument}
             onContinue={() => setStepIndex(shop ? 2 : 1)}
           />
+        )}
+
+        {stepIndex === 0 && items.length > 0 && (
+          <div style={{ marginTop: 20 }}>
+            <PrintAssistantPanel
+              documentIds={items.map((item) => item.document.documentId)}
+              onApply={handleAssistantApply}
+            />
+          </div>
         )}
 
         {stepIndex === 1 && items.length > 0 && (

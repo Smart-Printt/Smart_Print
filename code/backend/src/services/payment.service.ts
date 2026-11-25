@@ -8,6 +8,7 @@ import { prisma } from '../config/prisma';
 import * as orderService from './order.service';
 import { lockOrder, lockShop, transitionOrder } from './orderLocks';
 import * as queueService from './queue.service';
+import { publishShopQueueChanged } from './queueEvents';
 import * as shopService from './shop.service';
 import { paymentProvider } from './payments';
 import { ProviderOutcome } from './payments/paymentProvider';
@@ -163,7 +164,7 @@ async function finalizePayment(
   changedByUserId: string,
 ): Promise<Payment> {
   const orderId = order.orderId;
-  return prisma.$transaction(async (tx) => {
+  const finalized = await prisma.$transaction(async (tx) => {
     // Lock order: shop -> order -> queue (see orderLocks.ts). The order may
     // have been cancelled (or otherwise moved on) since it was read above -
     // never let a stale payment confirm SUCCESS against an order that is no
@@ -212,6 +213,15 @@ async function finalizePayment(
 
     return tx.payment.findUniqueOrThrow({ where: { paymentId: payment.paymentId } });
   });
+
+  // Tell live queue streams at this shop that a new order joined the line.
+  // Only after the transaction above has committed. Both the buyer's confirm
+  // call and the gateway webhook settle payments through here, so both notify.
+  if (finalized.paymentStatus === 'SUCCESS') {
+    publishShopQueueChanged(order.shopId);
+  }
+
+  return finalized;
 }
 
 // Razorpay webhook (payment.captured / order.paid), already signature-checked

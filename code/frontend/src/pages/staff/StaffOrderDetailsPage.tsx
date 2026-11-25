@@ -40,8 +40,10 @@ const STEP_LABEL: Record<OrderStatus, string> = {
 // gets the backend's 403/404, rendered below via ErrorState. Staff may view
 // documents and (only when it genuinely applies to this exact order) drive
 // the shop's FIFO queue forward, and hand over a READY order at the counter
-// ("Mark as Collected") - but never cancel/refund on the customer's behalf,
-// and refunds stay view-only. Those actions are intentionally absent here.
+// ("Mark as Collected" here, or from the dashboard's pickup desk after
+// scanning the student's QR code) - but never cancel/refund on the
+// customer's behalf, and refunds stay view-only. Those actions are
+// intentionally absent here.
 export function StaffOrderDetailsPage() {
   const { orderId } = useParams<{ orderId: string }>()
   const { showToast } = useToast()
@@ -198,7 +200,7 @@ export function StaffOrderDetailsPage() {
         action={<OrderStatusBadge status={order.orderStatus} />}
       />
 
-      <div style={{ display: 'grid', gap: 20, gridTemplateColumns: '1fr' }}>
+      <div className="split-grid">
         <Card padded>
           <p style={{ fontWeight: 800, marginBottom: 10 }}>Customer</p>
           <p style={{ fontWeight: 700, fontSize: 14.5 }}>{order.customerName}</p>

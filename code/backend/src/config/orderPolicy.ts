@@ -23,3 +23,25 @@ export const PAYABLE_ORDER_STATUSES = ['PLACED'] as const;
 export const REFUNDABLE_ORDER_STATUSES = ['CANCELLED'] as const;
 
 export const MAX_REFUND_REASON_LENGTH = 500;
+
+// Queue wait-time prediction (see services/waitModel.ts and
+// queue.service.ts). The model is trained on a shop's recently completed
+// orders; these only bound how much history it reads and how long a trained
+// model is reused before being re-fitted.
+export const WAIT_MODEL_LOOKBACK_DAYS = 60;
+export const WAIT_MODEL_MAX_TRAINING_ORDERS = 200;
+export const WAIT_MODEL_CACHE_MS = 60_000;
+
+// Master switch for wait-time estimates (env WAIT_ESTIMATES_ENABLED, default
+// on). Set it to false/0/off/no to stop showing estimates everywhere - e.g.
+// if a shop's data looks odd right before a demo. Read at call time so it can
+// be flipped without code changes (and tests can toggle it).
+export function waitEstimatesEnabled(): boolean {
+  const raw = (process.env.WAIT_ESTIMATES_ENABLED ?? '').trim().toLowerCase();
+  return !['false', '0', 'off', 'no'].includes(raw);
+}
+
+// Orders are waiting, nothing is printing, and the shop has shown no activity
+// for this long: staff are probably away / not starting the queue. The
+// estimate is withheld (it assumes the shop keeps working).
+export const STALL_MINUTES = 15;

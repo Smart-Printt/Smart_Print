@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon'
 import { Input, TextArea } from '@/components/ui/Input'
 import type { FinishingType, PaperSize, PrintType, SafeDocument, SafeFinishingRule, Sides } from '@/types'
 import { formatMoney } from '@/utils/money'
+import { PrintIssuesNotice } from './PrintIssuesNotice'
 import type { PrintSettings } from './types'
 
 const PAPER_SIZES: PaperSize[] = ['A4', 'A3', 'A5', 'LETTER', 'LEGAL']
@@ -60,6 +61,8 @@ export function DocumentSettingsCard({ document, settings, onChange, onRemove, f
           </button>
         )}
       </div>
+
+      <PrintIssuesNotice documentId={document.documentId} paperSize={settings.paperSize} />
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <SettingRow label="Print type">

@@ -59,6 +59,15 @@ export const summary = asyncHandler(async (req: AuthenticatedRequest, res: Respo
   res.status(200).json({ success: true, data });
 });
 
+// Pickup scan: ADMIN or the SHOP_STAFF of the order's shop (the route's
+// requireRole is only the cheap first pass - see order.service.ts).
+export const getByCode = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const userId = requireUserId(req);
+  const role = req.user!.role;
+  const order = await orderService.getOrderByCodeForStaff(userId, role, req.params.orderCode);
+  res.status(200).json({ success: true, data: { order } });
+});
+
 export const getOne = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const userId = requireUserId(req);
   const role = req.user!.role;

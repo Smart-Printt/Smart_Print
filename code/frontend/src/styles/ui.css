@@ -655,3 +655,82 @@ textarea.input {
 .text-secondary { color: var(--color-text-secondary); }
 .text-danger { color: var(--color-danger); }
 .text-success { color: var(--color-success); }
+
+/* ── Responsive & touch polish ───────────────────────────────────────── */
+
+/* Press feedback on every button */
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Two-column layout on wide screens, single column on phones */
+.split-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+@media (min-width: 1100px) {
+  .split-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+  }
+}
+
+/* Payment method options: stack on very narrow phones */
+.option-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 360px) {
+  .option-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Touch devices: 16px inputs stop iOS auto-zoom; 44px minimum tap targets */
+@media (pointer: coarse) {
+  .input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+  .btn {
+    min-height: 44px;
+  }
+  .btn--icon {
+    min-width: 44px;
+  }
+}
+
+/* Phones: modal becomes a bottom sheet */
+@media (max-width: 600px) {
+  .modal-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .modal {
+    max-width: none;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    padding: 24px 20px calc(20px + env(safe-area-inset-bottom));
+    animation: sheet-up var(--duration-base) var(--ease-out);
+  }
+  .modal__actions {
+    flex-direction: column-reverse;
+  }
+  .modal__actions .btn {
+    width: 100%;
+  }
+  /* Keep toasts above the bottom nav */
+  .toast-viewport {
+    bottom: calc(var(--bottomnav-height) + 16px + env(safe-area-inset-bottom));
+  }
+}
+
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}

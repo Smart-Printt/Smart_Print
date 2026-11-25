@@ -38,6 +38,8 @@ const AdminShopsPage = lazy(() => import('@/pages/admin/AdminShopsPage').then((m
 const AdminOrdersPage = lazy(() => import('@/pages/admin/AdminOrdersPage').then((m) => ({ default: m.AdminOrdersPage })))
 const AdminStaffPage = lazy(() => import('@/pages/admin/AdminStaffPage').then((m) => ({ default: m.AdminStaffPage })))
 const AdminPricingPage = lazy(() => import('@/pages/admin/AdminPricingPage').then((m) => ({ default: m.AdminPricingPage })))
+const AnalyticsPage = lazy(() => import('@/pages/shared/AnalyticsPage').then((m) => ({ default: m.AnalyticsPage })))
+const StaffAnalyticsPage = lazy(() => import('@/pages/staff/StaffAnalyticsPage').then((m) => ({ default: m.StaffAnalyticsPage })))
 const AdminRefundsPage = lazy(() => import('@/pages/admin/AdminRefundsPage').then((m) => ({ default: m.AdminRefundsPage })))
 
 const ForbiddenPage = lazy(() => import('@/pages/errors/ForbiddenPage').then((m) => ({ default: m.ForbiddenPage })))
@@ -72,6 +74,7 @@ function App() {
                   <Route element={<RequireRole roles={['SHOP_STAFF']} />}>
                     <Route path="/staff" element={<StaffDashboardPage />} />
                     <Route path="/staff/pricing" element={<StaffPricingPage />} />
+                    <Route path="/staff/analytics" element={<StaffAnalyticsPage />} />
                     <Route path="/staff/orders/:orderId" element={<StaffOrderDetailsPage />} />
                   </Route>
 
@@ -82,6 +85,7 @@ function App() {
                     <Route path="/admin/staff" element={<AdminStaffPage />} />
                     <Route path="/admin/pricing" element={<AdminPricingPage />} />
                     <Route path="/admin/refunds" element={<AdminRefundsPage />} />
+                    <Route path="/admin/analytics" element={<AnalyticsPage />} />
                   </Route>
 
                   <Route path="/profile" element={<ProfilePage />} />
