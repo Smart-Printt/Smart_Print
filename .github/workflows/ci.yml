@@ -76,6 +76,19 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  printer-agent:
+    name: Printer agent (test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code/printer-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm test
+
   docker:
     name: Docker (production images)
     runs-on: ubuntu-latest

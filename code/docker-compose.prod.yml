@@ -37,6 +37,20 @@ x-backend-env: &backend-env
   EMAIL_PORT: ${EMAIL_PORT:-}
   EMAIL_USER: ${EMAIL_USER:-}
   EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+  # File storage: "local" keeps files in the uploads volume below; "s3" uses an
+  # S3-compatible bucket (Cloudflare R2 / AWS S3). See backend/README.md.
+  STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_REGION: ${S3_REGION:-auto}
+  S3_ENDPOINT: ${S3_ENDPOINT:-}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+  # Word/Excel/PowerPoint -> PDF (LibreOffice is inside the backend image).
+  OFFICE_CONVERSION_ENABLED: ${OFFICE_CONVERSION_ENABLED:-true}
+  OFFICE_CONVERSION_TIMEOUT_SECONDS: ${OFFICE_CONVERSION_TIMEOUT_SECONDS:-60}
+  FILE_CLEANUP_INTERVAL_MINUTES: ${FILE_CLEANUP_INTERVAL_MINUTES:-60}
+  FINISHED_ORDER_FILE_RETENTION_HOURS: ${FINISHED_ORDER_FILE_RETENTION_HOURS:-24}
+  UNUSED_DOCUMENT_RETENTION_HOURS: ${UNUSED_DOCUMENT_RETENTION_HOURS:-24}
 
 services:
   db:
@@ -93,6 +107,26 @@ services:
     depends_on:
       - backend
 
+  # HTTPS for the test website (optional). Start with --profile https and set
+  # DOMAIN in .env.production. See DEPLOYMENT.md.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["https"]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - smartprint_caddy_data:/data
+      - smartprint_caddy_config:/config
+    depends_on:
+      - frontend
+
 volumes:
+  smartprint_caddy_data:
+  smartprint_caddy_config:
   smartprint_prod_db_data:
   smartprint_prod_uploads:

@@ -23,7 +23,12 @@ FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     PORT=4000
 WORKDIR /app
+# LibreOffice (headless) converts Word/Excel/PowerPoint uploads to PDF for
+# printing - see src/services/documents/officeConverter.ts. Writer, Calc and
+# Impress only, plus common fonts so documents keep their layout.
 RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+    libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
+    fonts-dejavu fonts-liberation fonts-noto-core \
   && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci --omit=dev

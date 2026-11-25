@@ -42,6 +42,36 @@ export const env = {
   // - never hardcode localhost in a service. Defaults to the Vite dev
   // server port for local development.
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:5173',
+  // Where uploaded files live: "local" (UPLOAD_DIR on this server's disk) or
+  // "s3" (an S3-compatible bucket such as Cloudflare R2 or AWS S3). See
+  // services/storage/index.ts and README.md "File storage".
+  storage: {
+    provider: (process.env.STORAGE_PROVIDER ?? 'local').trim().toLowerCase(),
+    s3: {
+      bucket: process.env.S3_BUCKET ?? '',
+      // R2 uses the region "auto".
+      region: process.env.S3_REGION ?? 'auto',
+      endpoint: process.env.S3_ENDPOINT || undefined,
+      accessKeyId: process.env.S3_ACCESS_KEY_ID ?? '',
+      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? '',
+      keyPrefix: process.env.S3_KEY_PREFIX ?? 'documents/',
+    },
+  },
+  // Word/Excel/PowerPoint -> PDF with LibreOffice (services/documents/
+  // officeConverter.ts). Skipped automatically when LibreOffice is missing.
+  officeConversion: {
+    enabled: (process.env.OFFICE_CONVERSION_ENABLED ?? 'true').trim().toLowerCase() !== 'false',
+    command: [process.env.SOFFICE_PATH?.trim() || 'soffice'],
+    timeoutMs: Number(process.env.OFFICE_CONVERSION_TIMEOUT_SECONDS ?? 60) * 1000,
+    maxParallel: Number(process.env.OFFICE_CONVERSION_MAX_PARALLEL ?? 2),
+  },
+  // Automatic file clean-up (services/fileCleanup.service.ts). Hours are how
+  // long a file is kept AFTER it stops being needed. 0 interval = job off.
+  fileCleanup: {
+    intervalMinutes: Number(process.env.FILE_CLEANUP_INTERVAL_MINUTES ?? 60),
+    finishedOrderRetentionHours: Number(process.env.FINISHED_ORDER_FILE_RETENTION_HOURS ?? 24),
+    unusedDocumentRetentionHours: Number(process.env.UNUSED_DOCUMENT_RETENTION_HOURS ?? 24),
+  },
   email: {
     // Optional explicit provider: smtp | console | mock (see services/email/index.ts).
     // Unset = automatic: SMTP when fully configured, otherwise the dev console.

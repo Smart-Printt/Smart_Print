@@ -15,5 +15,5 @@
   "rules": {
     "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }]
   },
-  "ignorePatterns": ["dist", "node_modules", "jest.config.js"]
+  "ignorePatterns": ["dist", "node_modules", "jest.config.js", "tests/fixtures"]
 }

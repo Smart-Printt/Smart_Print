@@ -1,0 +1,7 @@
+# HTTPS in front of the SmartPrint frontend container. Caddy gets and renews a
+# free Let's Encrypt certificate for DOMAIN automatically (ports 80 and 443
+# must be open and DOMAIN's DNS must point at this server).
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy frontend:80
+}
