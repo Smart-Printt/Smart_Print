@@ -47,6 +47,40 @@ See `.env.example`:
 - `PORT` — server port (default 4000)
 - `NODE_ENV` — `development` / `production`
 
+## File storage
+
+Uploaded documents are stored through `src/services/storage`:
+
+- `STORAGE_PROVIDER=local` (default) keeps files in `UPLOAD_DIR` on the
+  server's disk. Good for development and tests.
+- `STORAGE_PROVIDER=s3` keeps files in a **private** S3-compatible bucket —
+  Cloudflare R2 or AWS S3. Fill in `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
+  `S3_SECRET_ACCESS_KEY`, and for R2 `S3_REGION=auto` plus
+  `S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com`. The server
+  refuses to start if any of these is missing.
+
+The bucket is never exposed to users: downloads still go through
+`/api/documents/:id/download`, which checks who is asking first.
+
+**Setting up Cloudflare R2 (one time):** Cloudflare dashboard → R2 → *Create
+bucket* (keep it private) → *Manage R2 API tokens* → create a token with
+*Object Read & Write* on that bucket. Copy the Access Key ID, Secret Access
+Key and the account's S3 endpoint into `.env`.
+
+### Automatic file deletion
+
+`src/services/fileCleanup.service.ts` runs every
+`FILE_CLEANUP_INTERVAL_MINUTES` (default 60; `0` turns it off):
+
+- A document **never used in an order** is deleted completely after
+  `UNUSED_DOCUMENT_RETENTION_HOURS` (default 24).
+- When **every order using a document is collected or cancelled**, its file
+  is deleted after `FINISHED_ORDER_FILE_RETENTION_HOURS` (default 24). The
+  database row stays (marked `file_deleted_at`) so order history still shows
+  the file name; it is hidden from "My documents" and cannot be printed or
+  ordered again.
+- A file that an open order still needs is never touched.
+
 ## Project structure
 
 ```
