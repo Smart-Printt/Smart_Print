@@ -1,0 +1,16 @@
+{
+  "name": "smartprint-printer-agent",
+  "version": "0.1.0",
+  "description": "Runs on the print shop's PC: takes the next paid SmartPrint order, prints it, marks it READY.",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/agent.js",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "start": "node --env-file=agent.env src/agent.js",
+    "once": "node --env-file=agent.env src/agent.js --once",
+    "test": "node --test test/agent.test.js"
+  }
+}

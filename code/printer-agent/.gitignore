@@ -1,0 +1,3 @@
+# Real settings (has the staff password) - never commit.
+agent.env
+printed/
