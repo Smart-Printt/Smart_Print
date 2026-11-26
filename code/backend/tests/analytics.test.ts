@@ -343,7 +343,9 @@ describe('GET /api/shops/:shopId/analytics - a shop owner sees only their own sh
     const staff = await createUser('staff-inactive', 'SHOP_STAFF', shop.shopId);
     expect((await getShop(staff.token, shop.shopId)).status).toBe(200);
     await prisma.user.update({ where: { userId: staff.userId }, data: { status: 'INACTIVE' } });
-    expect((await getShop(staff.token, shop.shopId)).status).toBe(403);
+    // The auth middleware re-reads the user on every request and rejects an
+    // INACTIVE account with 401 before any shop-access check runs.
+    expect((await getShop(staff.token, shop.shopId)).status).toBe(401);
   });
 
   it('lets an admin view any single shop, and rejects a bad range or unknown shop', async () => {
