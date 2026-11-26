@@ -21,9 +21,27 @@ import { ForbiddenError, NotFoundError } from '../src/utils/errors';
 
 const app = createApp();
 
-function token(userId: string, role: 'STUDENT' | 'SHOP_STAFF' | 'ADMIN'): string {
+type Role = 'STUDENT' | 'SHOP_STAFF' | 'ADMIN';
+
+// The auth middleware looks every token's user up in the database (so a
+// deactivated account stops working at once). These tests have no real users,
+// so token() records who it signed for and the lookup below is stubbed to
+// return exactly those users as active accounts - any other id is still "not
+// found", leaving the middleware's own checks in force.
+const signedUsers = new Map<string, Role>();
+
+function token(userId: string, role: Role): string {
+  signedUsers.set(userId, role);
   return jwt.sign({ userId, role }, env.jwtSecret, { expiresIn: env.jwtExpiresIn } as jwt.SignOptions);
 }
+
+beforeEach(() => {
+  jest.spyOn(prisma.user, 'findUnique').mockImplementation(((args: { where: { userId?: string } }) => {
+    const userId = args.where.userId;
+    const role = userId ? signedUsers.get(userId) : undefined;
+    return Promise.resolve(role ? { userId, role, status: 'ACTIVE', passwordChangedAt: null } : null);
+  }) as never);
+});
 
 function entry(overrides: Partial<SafeQueueEntry> = {}): SafeQueueEntry {
   return {
