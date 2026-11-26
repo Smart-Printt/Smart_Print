@@ -433,3 +433,51 @@
   color: var(--color-text-secondary);
   font-size: 14.5px;
 }
+
+/* ── Mobile nav polish ───────────────────────────────────────────────── */
+
+/* Content never hides behind the taller bottom nav on notched phones */
+.shell__content {
+  padding-bottom: calc(var(--bottomnav-height) + 32px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 900px) {
+  .shell__content {
+    padding-bottom: 56px;
+  }
+}
+
+/* Admin has 6 tabs: share width evenly so none are hidden off-screen */
+.shell__bottomnav-link {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 10.5px;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.shell__bottomnav-link:active {
+  background: var(--color-surface-sunken);
+}
+
+.shell__bottomnav-link.is-active svg {
+  transform: translateY(-1px);
+}
+
+.shell__topbar-signout {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-right: -8px;
+  border-radius: var(--radius-full);
+}
+
+.shell__topbar-signout:active {
+  background: var(--color-surface-sunken);
+}

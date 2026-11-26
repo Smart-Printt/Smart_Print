@@ -74,6 +74,10 @@ function queueEntry(overrides: Partial<SafeQueueEntry>): SafeQueueEntry {
     completedAt: null,
     cancelledAt: null,
     position: null,
+    estimatedWaitMinutes: null,
+    estimatedWaitRange: null,
+    estimateBasis: null,
+    estimateStatus: null,
     ...overrides,
   }
 }

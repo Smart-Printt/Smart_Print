@@ -1,5 +1,5 @@
 import { api, fetchAuthorizedBlob } from './apiClient'
-import type { ApiSuccess, SafeDocument } from '@/types'
+import type { ApiSuccess, PaperSize, PrintIssueReport, SafeDocument } from '@/types'
 
 export const documentApi = {
   async upload(file: File): Promise<SafeDocument> {
@@ -17,6 +17,11 @@ export const documentApi = {
   async getOne(id: string): Promise<SafeDocument> {
     const res = await api.get<ApiSuccess<{ document: SafeDocument }>>(`/documents/${id}`)
     return res.data.document
+  },
+
+  async printIssues(id: string, paperSize: PaperSize): Promise<PrintIssueReport> {
+    const res = await api.get<ApiSuccess<PrintIssueReport>>(`/documents/${id}/print-issues?paperSize=${paperSize}`)
+    return res.data
   },
 
   async remove(id: string): Promise<void> {

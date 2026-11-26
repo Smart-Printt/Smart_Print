@@ -8,6 +8,7 @@ import type { FinishingType, PricingPreviewResult, SafeOrder, SafeShop } from '@
 import { formatMoney, isZero } from '@/utils/money'
 import { orderApi } from '@/services/orderApi'
 import { saveRecentSetup } from '@/utils/recentSetup'
+import { PrintIssuesNotice } from './PrintIssuesNotice'
 import type { OrderItemDraft } from './types'
 
 const FINISHING_LABEL: Record<FinishingType, string> = {
@@ -109,6 +110,7 @@ export function StepReview({ shop, items, preview, getIdempotencyKey, onBack, on
           const previewItem = preview.items[i]
           return (
             <div key={item.document.documentId} style={{ padding: '14px 0', borderBottom: i < items.length - 1 ? '1px solid var(--color-border)' : 'none' }}>
+              <PrintIssuesNotice documentId={item.document.documentId} paperSize={item.settings.paperSize} />
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
                 <span style={{ fontWeight: 700, fontSize: 14 }}>
                   {i + 1}. {item.document.fileName}

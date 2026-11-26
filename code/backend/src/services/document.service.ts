@@ -128,8 +128,12 @@ export async function listDocumentsForUser(userId: string): Promise<SafeDocument
   const documents = await prisma.document.findMany({
     where: { userId, fileDeletedAt: null },
     orderBy: { uploadedAt: 'desc' },
+    include: { _count: { select: { orderDocuments: true } } },
   });
-  return documents.map(toSafeDocument);
+  return documents.map(({ _count, ...document }) => ({
+    ...toSafeDocument(document),
+    isUsedInOrder: _count.orderDocuments > 0,
+  }));
 }
 
 // Ownership check lives here, not in the controller, so every entry point

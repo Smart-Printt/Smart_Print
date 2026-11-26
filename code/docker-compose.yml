@@ -29,12 +29,12 @@ services:
         required: false
     environment:
       # Fixed here so a different PORT in your own .env cannot break the
-      # 4000:4000 mapping below.
+      # 4321:4000 mapping below (host port 4321 -> this container's 4000).
       PORT: "4000"
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
       DATABASE_URL: postgresql://smartprint:smartprint@db:5432/smartprint?schema=public
     ports:
-      - "4000:4000"
+      - "4321:4000"
     volumes:
       - ./backend:/app
       - backend_node_modules:/app/node_modules

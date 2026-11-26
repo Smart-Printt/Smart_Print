@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
+import { QrCode } from '@/components/QrCode'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { OrderStatusBadge, RefundStatusBadge } from '@/components/ui/Badge'
@@ -13,6 +14,7 @@ import { PageHeader } from '@/layouts/AppShell'
 import { StepPayment } from '@/pages/student/print-flow/StepPayment'
 import { orderApi } from '@/services/orderApi'
 import { queueApi } from '@/services/queueApi'
+import { subscribeToQueue } from '@/services/queueStream'
 import { refundApi } from '@/services/refundApi'
 import { paymentApi } from '@/services/paymentApi'
 import { useToast } from '@/hooks/useToast'
@@ -20,6 +22,7 @@ import { CANCELLABLE_ORDER_STATUSES } from '@/types/order'
 import type { OrderStatus, SafeOrder, SafePayment, SafeQueueEntry, SafeRefund } from '@/types'
 import { ApiError } from '@/types/api'
 import { formatDateTime } from '@/utils/date'
+import { estimateNote, estimateNotice } from '@/utils/waitEstimate'
 import { formatMoney, isZero } from '@/utils/money'
 
 const CANONICAL_STEPS: OrderStatus[] = ['PLACED', 'PAYMENT_CONFIRMED', 'QUEUED', 'PRINTING', 'READY', 'COLLECTED']
@@ -34,7 +37,10 @@ const STEP_LABEL: Record<OrderStatus, string> = {
   CANCELLED: 'Order cancelled',
 }
 
+// While the live stream is connected, polling is only a safety net; if the
+// stream drops (or is unavailable), polling takes over at the faster rate.
 const POLL_INTERVAL_MS = 8000
+const POLL_INTERVAL_WHILE_LIVE_MS = 30000
 
 export function OrderDetailsPage() {
   const { orderId } = useParams<{ orderId: string }>()
@@ -53,6 +59,7 @@ export function OrderDetailsPage() {
   const [isCancelling, setIsCancelling] = useState(false)
   const [isRequestingRefund, setIsRequestingRefund] = useState(false)
   const [isPaying, setIsPaying] = useState(false)
+  const [isLive, setIsLive] = useState(false)
 
   const load = useCallback(async () => {
     if (!orderId) return
@@ -103,13 +110,34 @@ export function OrderDetailsPage() {
     void load()
   }, [load])
 
-  // Live position/status polling only while the order is actually moving
-  // through the queue - never on terminal states, and at a gentle interval.
+  const isInQueue = order !== null && ['QUEUED', 'PRINTING'].includes(order.orderStatus)
+
+  // Live updates: the server pushes a new queue entry the moment the shop's
+  // queue moves (someone starts/finishes printing, an order is cancelled).
+  // Only while the order is actually in the queue.
   useEffect(() => {
-    if (!order || !['QUEUED', 'PRINTING'].includes(order.orderStatus)) return
-    const interval = window.setInterval(() => void load(), POLL_INTERVAL_MS)
+    if (!orderId || !isInQueue) return
+    const stop = subscribeToQueue(orderId, {
+      onEntry: (entry) => {
+        setQueue(entry)
+        void load() // also refreshes the order status (e.g. PRINTING -> READY)
+      },
+      onOpen: () => setIsLive(true),
+      onClose: () => setIsLive(false),
+    })
+    return () => {
+      stop()
+      setIsLive(false)
+    }
+  }, [orderId, isInQueue, load])
+
+  // Polling fallback - gentle, only while in the queue, and slower while the
+  // live stream is connected.
+  useEffect(() => {
+    if (!isInQueue) return
+    const interval = window.setInterval(() => void load(), isLive ? POLL_INTERVAL_WHILE_LIVE_MS : POLL_INTERVAL_MS)
     return () => window.clearInterval(interval)
-  }, [order, load])
+  }, [isInQueue, isLive, load])
 
   async function handleCancel() {
     if (!orderId) return
@@ -194,8 +222,12 @@ export function OrderDetailsPage() {
           <p style={{ fontSize: 28, marginBottom: 4 }}>🎉</p>
           <p style={{ fontWeight: 800, color: 'var(--color-success)', fontSize: 16 }}>Your prints are ready!</p>
           <p className="text-secondary" style={{ fontSize: 13.5, marginTop: 4 }}>
-            Head to {order.shopName} to collect them.
+            Head to {order.shopName} and show this QR code to collect them.
           </p>
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 14 }}>
+            <QrCode value={order.orderCode} size={176} label={`Pickup QR code for order ${order.orderCode}`} />
+          </div>
+          <p style={{ fontWeight: 800, letterSpacing: '0.04em', marginTop: 10 }}>Pickup code: {order.orderCode}</p>
         </Card>
       )}
 
@@ -214,14 +246,54 @@ export function OrderDetailsPage() {
                 <p style={{ fontSize: 24, fontWeight: 800 }}>{queue.position === 0 ? 'Now' : `#${queue.position}`}</p>
               </div>
             )}
+            {queue.position !== null && queue.position > 0 && queue.estimatedWaitMinutes !== null && (
+              <div>
+                <p className="text-muted" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase' }}>
+                  Est. wait
+                </p>
+                <p style={{ fontSize: 24, fontWeight: 800 }}>
+                  {queue.estimatedWaitMinutes === 0 ? 'Next' : `~${queue.estimatedWaitMinutes} min`}
+                </p>
+                {queue.estimatedWaitRange && queue.estimatedWaitRange.high > queue.estimatedWaitRange.low && (
+                  <p className="text-muted" style={{ fontSize: 11.5, marginTop: 2 }}>
+                    likely {queue.estimatedWaitRange.low}–{queue.estimatedWaitRange.high} min
+                  </p>
+                )}
+              </div>
+            )}
           </div>
+          {estimateNotice(queue.estimateStatus) && (
+            <div
+              role="status"
+              style={{
+                marginTop: 14,
+                padding: '10px 12px',
+                borderRadius: 12,
+                background: 'var(--color-warning-soft)',
+                color: 'var(--color-text)',
+                textAlign: 'left',
+              }}
+            >
+              <p style={{ fontWeight: 800, fontSize: 13.5, color: 'var(--color-warning)' }}>
+                {estimateNotice(queue.estimateStatus)!.title}
+              </p>
+              <p style={{ fontSize: 12.5, marginTop: 2 }}>{estimateNotice(queue.estimateStatus)!.body}</p>
+            </div>
+          )}
           <p className="text-muted" style={{ fontSize: 12, textAlign: 'center', marginTop: 10 }}>
-            Position updates automatically.
+            {isLive ? (
+              <>
+                <span aria-hidden style={{ color: 'var(--color-success)' }}>●</span> Live — updates the moment the queue moves.
+              </>
+            ) : (
+              'Position updates automatically.'
+            )}{' '}
+            {queue.estimatedWaitMinutes !== null && queue.position !== 0 && estimateNote(queue.estimateBasis)}
           </p>
         </Card>
       )}
 
-      <div style={{ display: 'grid', gap: 20, gridTemplateColumns: '1fr' }}>
+      <div className="split-grid">
         <Card padded>
           <p style={{ fontWeight: 800, marginBottom: 14 }}>Order timeline</p>
           <div style={{ display: 'flex', flexDirection: 'column' }}>

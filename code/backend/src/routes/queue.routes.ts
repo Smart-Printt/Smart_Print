@@ -17,6 +17,9 @@ queueRouter.use(authenticate);
 
 queueRouter.get('/:orderId/queue', queueController.getOne);
 queueRouter.get('/:orderId/queue-position', queueController.getPosition);
+// Server-Sent Events: pushes the order's queue entry whenever the shop's
+// queue changes (see queue.controller.ts::stream).
+queueRouter.get('/:orderId/queue/stream', queueController.stream);
 queueRouter.patch(
   '/:orderId/collect',
   requireRole('ADMIN', 'SHOP_STAFF'),

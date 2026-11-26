@@ -4,11 +4,15 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Icon } from '@/components/ui/Icon'
+import { Modal } from '@/components/ui/Modal'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorState, StateBlock } from '@/components/ui/StateBlock'
 import { useAuth } from '@/hooks/useAuth'
 import { useOrderList } from '@/hooks/useOrderList'
+import { useToast } from '@/hooks/useToast'
+import { orderApi } from '@/services/orderApi'
 import { queueApi } from '@/services/queueApi'
+import { ApiError } from '@/types/api'
 import type { OrderStatus, SafeOrder, SafeQueueEntry } from '@/types'
 import { greetingForNow } from '@/utils/date'
 import { isZero } from '@/utils/money'
@@ -91,7 +95,7 @@ export function DashboardPage() {
       ) : orders === null ? (
         <Skeleton height={160} radius="18px" />
       ) : activeOrder ? (
-        <ActiveOrderCard order={activeOrder} queue={queue} />
+        <ActiveOrderCard order={activeOrder} queue={queue} onCancelled={load} />
       ) : (
         <Card padded>
           <StateBlock
@@ -127,8 +131,33 @@ export function DashboardPage() {
   )
 }
 
-function ActiveOrderCard({ order, queue }: { order: SafeOrder; queue: SafeQueueEntry | null }) {
+function ActiveOrderCard({
+  order,
+  queue,
+  onCancelled,
+}: {
+  order: SafeOrder
+  queue: SafeQueueEntry | null
+  onCancelled: () => void
+}) {
   const navigate = useNavigate()
+  const { showToast } = useToast()
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false)
+  const [isCancelling, setIsCancelling] = useState(false)
+
+  async function handleCancel() {
+    setIsCancelling(true)
+    try {
+      await orderApi.cancel(order.orderId, 'Cancelled before payment')
+      showToast('Order removed.', 'success')
+      setIsConfirmOpen(false)
+      onCancelled()
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not remove this order.', 'error')
+    } finally {
+      setIsCancelling(false)
+    }
+  }
   const documentName =
     order.items.length === 1 ? order.items[0]?.fileName ?? 'Your document' : `${order.items.length} documents`
   const isFree = isZero(order.totalAmount)
@@ -180,7 +209,37 @@ function ActiveOrderCard({ order, queue }: { order: SafeOrder; queue: SafeQueueE
       </p>
       <p style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>{documentName}</p>
       <p className="text-secondary" style={{ fontSize: 13.5, marginBottom: 12 }}>{order.shopName}</p>
-      <Button size="sm">Continue</Button>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <Button size="sm">Continue</Button>
+        {order.orderStatus === 'PLACED' && (
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={(e) => {
+              e.stopPropagation()
+              setIsConfirmOpen(true)
+            }}
+          >
+            Remove order
+          </Button>
+        )}
+      </div>
+      {/* Stop clicks inside the modal from bubbling to the card's navigate handler */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <Modal isOpen={isConfirmOpen} title="Remove this order?" onClose={() => setIsConfirmOpen(false)}>
+          <p className="modal__body">
+            Don't want to complete this order? It will be cancelled and you won't be charged. Your uploaded document stays in your Documents.
+          </p>
+          <div className="modal__actions">
+            <Button variant="secondary" onClick={() => setIsConfirmOpen(false)} disabled={isCancelling}>
+              Keep Order
+            </Button>
+            <Button variant="danger" onClick={handleCancel} isLoading={isCancelling}>
+              Remove Order
+            </Button>
+          </div>
+        </Modal>
+      </div>
     </Card>
   )
 }

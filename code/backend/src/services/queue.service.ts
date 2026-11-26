@@ -1,10 +1,28 @@
 import { OrderStatus, Prisma, Queue, UserRole } from '@prisma/client';
 
+import {
+  STALL_MINUTES,
+  WAIT_MODEL_CACHE_MS,
+  WAIT_MODEL_LOOKBACK_DAYS,
+  WAIT_MODEL_MAX_TRAINING_ORDERS,
+  waitEstimatesEnabled,
+} from '../config/orderPolicy';
 import { prisma } from '../config/prisma';
 import * as orderService from './order.service';
 import { lockOrder, lockShop, transitionOrder } from './orderLocks';
+import { publishShopQueueChanged } from './queueEvents';
+import {
+  PrintItem,
+  Sample,
+  WaitModel,
+  WaitPrediction,
+  featuresFromItems,
+  fitModel,
+  isOverrunning,
+  predictWait,
+} from './waitModel';
 import * as shopService from './shop.service';
-import { SafeQueueEntry } from '../types/queue.types';
+import { EstimateBasis, EstimateStatus, SafeQueueEntry } from '../types/queue.types';
 import { ConflictError, NotFoundError } from '../utils/errors';
 
 type QueueWithOrder = Queue & { order: { orderCode: string } };
@@ -29,7 +47,13 @@ const FIFO_ORDER: Prisma.QueueOrderByWithRelationInput[] = [
   { queueId: 'asc' },
 ];
 
-function toSafeQueueEntry(queue: QueueWithOrder, position: number | null): SafeQueueEntry {
+function toSafeQueueEntry(
+  queue: QueueWithOrder,
+  position: number | null,
+  estimate: WaitPrediction | null = null,
+  basis: EstimateBasis | null = null,
+  status: EstimateStatus | null = null,
+): SafeQueueEntry {
   return {
     queueId: queue.queueId,
     orderId: queue.orderId,
@@ -42,7 +66,170 @@ function toSafeQueueEntry(queue: QueueWithOrder, position: number | null): SafeQ
     completedAt: queue.completedAt,
     cancelledAt: queue.cancelledAt,
     position,
+    estimatedWaitMinutes: estimate ? estimate.minutes : null,
+    estimatedWaitRange: estimate ? { low: estimate.low, high: estimate.high } : null,
+    estimateBasis: estimate ? basis : null,
+    estimateStatus: status,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wait-time prediction. Derived on every read (like position), never stored.
+//
+// A model (services/waitModel.ts - Bayesian linear regression) learns how
+// long this shop's jobs take from its completed orders: minutes as a
+// function of B&W pages, colour pages and finishing. A student's wait is the
+// sum of the predicted times of the orders ahead of them plus what is left
+// of the order printing now. This only INFORMS the student - queue order
+// itself stays strictly FIFO and never depends on the prediction.
+// ─────────────────────────────────────────────────────────────────────────
+
+const ORDER_ITEMS_SELECT = {
+  select: {
+    copies: true,
+    printPageCount: true,
+    pricingRule: { select: { printType: true } },
+    finishingRule: { select: { finishingType: true } },
+  },
+} as const;
+
+interface OrderWithItems {
+  orderDocuments: {
+    copies: number;
+    printPageCount: number;
+    pricingRule: { printType: 'BW' | 'COLOR' };
+    finishingRule: { finishingType: PrintItem['finishing'] } | null;
+  }[];
+}
+
+function toPrintItems(order: OrderWithItems): PrintItem[] {
+  return order.orderDocuments.map((doc) => ({
+    pages: doc.printPageCount,
+    copies: doc.copies,
+    printType: doc.pricingRule.printType,
+    finishing: doc.finishingRule?.finishingType ?? null,
+  }));
+}
+
+const waitModelCache = new Map<string, { model: WaitModel; loadedAt: number }>();
+
+// Called when a print completes: the shop just produced fresh training data.
+export function invalidateWaitModel(shopId: string): void {
+  waitModelCache.delete(shopId);
+}
+
+async function loadWaitModel(
+  client: Prisma.TransactionClient | typeof prisma,
+  shopId: string,
+): Promise<WaitModel> {
+  const cached = waitModelCache.get(shopId);
+  if (cached && Date.now() - cached.loadedAt < WAIT_MODEL_CACHE_MS) {
+    return cached.model;
+  }
+
+  const since = new Date(Date.now() - WAIT_MODEL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const rows = await client.queue.findMany({
+    where: {
+      queueStatus: 'COMPLETED',
+      order: { shopId },
+      startedAt: { not: null },
+      completedAt: { not: null, gte: since },
+    },
+    orderBy: { completedAt: 'desc' },
+    take: WAIT_MODEL_MAX_TRAINING_ORDERS,
+    select: {
+      startedAt: true,
+      completedAt: true,
+      order: { select: { orderDocuments: ORDER_ITEMS_SELECT } },
+    },
+  });
+
+  const samples: Sample[] = rows.map((row) => ({
+    x: featuresFromItems(toPrintItems(row.order as unknown as OrderWithItems)),
+    y: (row.completedAt!.getTime() - row.startedAt!.getTime()) / 60_000,
+  }));
+  const model = fitModel(samples);
+  waitModelCache.set(shopId, { model, loadedAt: Date.now() });
+  return model;
+}
+
+function basisOf(model: WaitModel): EstimateBasis {
+  return {
+    method: 'bayesian-linear-regression',
+    trainingOrders: model.trainingOrders,
+    maeMinutes: model.maeMinutes,
+    baselineMaeMinutes: model.baselineMaeMinutes,
+  };
+}
+
+interface ShopEstimates {
+  status: EstimateStatus;
+  basis: EstimateBasis | null;
+  // Only filled when status is 'normal'.
+  estimates: Map<string, WaitPrediction>;
+}
+
+// One pass over the shop's line: every WAITING order's predicted wait, in
+// FIFO order, so each order's estimate builds on the ones in front of it.
+// First it checks the estimate can be trusted at all:
+//   disabled - the feature is switched off;
+//   delayed  - the order printing now is far past its predicted time;
+//   stalled  - orders are waiting but nothing has printed for STALL_MINUTES.
+// In those cases no numbers are produced - the model assumes a shop that is
+// working normally, and a confident wrong number is worse than none.
+async function buildWaitEstimates(
+  client: Prisma.TransactionClient | typeof prisma,
+  shopId: string,
+): Promise<ShopEstimates> {
+  if (!waitEstimatesEnabled()) {
+    return { status: 'disabled', basis: null, estimates: new Map() };
+  }
+
+  const orderSelect = { select: { orderDocuments: ORDER_ITEMS_SELECT } } as const;
+  const [model, waiting, printing, lastDone] = await Promise.all([
+    loadWaitModel(client, shopId),
+    client.queue.findMany({
+      where: { queueStatus: 'WAITING', order: { shopId } },
+      orderBy: FIFO_ORDER,
+      select: { queueId: true, enteredAt: true, order: orderSelect },
+    }),
+    client.queue.findFirst({
+      where: { queueStatus: 'PRINTING', order: { shopId } },
+      select: { startedAt: true, order: orderSelect },
+    }),
+    client.queue.findFirst({
+      where: { queueStatus: 'COMPLETED', order: { shopId }, completedAt: { not: null } },
+      orderBy: { completedAt: 'desc' },
+      select: { completedAt: true },
+    }),
+  ]);
+  const basis = basisOf(model);
+
+  const printingState = printing
+    ? {
+        x: featuresFromItems(toPrintItems(printing.order as unknown as OrderWithItems)),
+        elapsedMinutes: printing.startedAt ? (Date.now() - printing.startedAt.getTime()) / 60_000 : 0,
+      }
+    : null;
+
+  if (printingState && isOverrunning(model, printingState.x, printingState.elapsedMinutes)) {
+    return { status: 'delayed', basis, estimates: new Map() };
+  }
+
+  if (!printingState && waiting.length > 0) {
+    const lastActivity = Math.max(waiting[0]!.enteredAt.getTime(), lastDone?.completedAt?.getTime() ?? 0);
+    if ((Date.now() - lastActivity) / 60_000 > STALL_MINUTES) {
+      return { status: 'stalled', basis, estimates: new Map() };
+    }
+  }
+
+  const estimates = new Map<string, WaitPrediction>();
+  const ahead: number[][] = [];
+  for (const entry of waiting) {
+    estimates.set(entry.queueId, predictWait(model, ahead, printingState));
+    ahead.push(featuresFromItems(toPrintItems(entry.order as unknown as OrderWithItems)));
+  }
+  return { status: 'normal', basis, estimates };
 }
 
 // position is always derived from the same ordering as FIFO_ORDER
@@ -156,6 +343,17 @@ export async function getQueueEntryForOrder(
 
   const queue = await findQueueEntryForOrder(orderId);
   const position = await computePosition(prisma, queue.shopId, queue);
+  if (queue.queueStatus === 'WAITING') {
+    const { status, basis, estimates } = await buildWaitEstimates(prisma, queue.shopId);
+    return toSafeQueueEntry(queue, position, estimates.get(queue.queueId) ?? null, basis, status);
+  }
+  if (queue.queueStatus === 'PRINTING') {
+    const { status, basis } = await buildWaitEstimates(prisma, queue.shopId);
+    // Your own order is printing: no wait to estimate - unless it is running
+    // far over its predicted time, which is worth telling you about.
+    const estimate = status === 'normal' ? { minutes: 0, low: 0, high: 0 } : null;
+    return toSafeQueueEntry(queue, position, estimate, basis, status);
+  }
   return toSafeQueueEntry(queue, position);
 }
 
@@ -191,7 +389,10 @@ export async function listWaitingQueueForShop(
 
   // Already FIFO-ordered by the query above, so position is just the
   // 1-based index - no need for a per-entry count query here.
-  return entries.map((entry, index) => toSafeQueueEntry(entry, index + 1));
+  const { status, basis, estimates } = await buildWaitEstimates(prisma, shopId);
+  return entries.map((entry, index) =>
+    toSafeQueueEntry(entry, index + 1, estimates.get(entry.queueId) ?? null, basis, status),
+  );
 }
 
 export async function getNextForShop(
@@ -314,6 +515,7 @@ export async function startNextForShop(
     }
   });
 
+  publishShopQueueChanged(shopId);
   return toSafeQueueEntry(started, 0);
 }
 
@@ -360,6 +562,9 @@ export async function completeQueueEntry(
     return tx.queue.findUniqueOrThrow({ where: { queueId }, include: QUEUE_WITH_ORDER_INCLUDE });
   });
 
+  // The shop just produced a new training example - re-learn before the next read.
+  invalidateWaitModel(shopId);
+  publishShopQueueChanged(shopId);
   return toSafeQueueEntry(updated, null);
 }
 
@@ -394,4 +599,6 @@ export async function collectOrder(userId: string, role: UserRole, orderId: stri
       },
     });
   });
+
+  publishShopQueueChanged(order.shopId);
 }

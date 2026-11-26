@@ -186,9 +186,12 @@ export function DocumentsPage() {
                   <Button size="icon" variant="ghost" aria-label="Download" onClick={() => void handleDownload(doc)}>
                     <Icon name="download" size={17} />
                   </Button>
-                  <Button size="icon" variant="ghost" aria-label="Delete" onClick={() => setPendingDeleteId(doc.documentId)}>
-                    <Icon name="trash" size={17} />
-                  </Button>
+                  {/* Documents used in an order are kept for order records and re-printing, so no delete option is offered for them. */}
+                  {!doc.isUsedInOrder && (
+                    <Button size="icon" variant="ghost" aria-label="Delete" onClick={() => setPendingDeleteId(doc.documentId)}>
+                      <Icon name="trash" size={17} />
+                    </Button>
+                  )}
                 </div>
               </div>
             </Card>
@@ -199,7 +202,7 @@ export function DocumentsPage() {
       <ConfirmModal
         isOpen={!!pendingDeleteId}
         title="Delete this document?"
-        description="This can't be undone. Documents already used in an order can't be deleted."
+        description="This can't be undone."
         confirmLabel="Delete"
         danger
         isLoading={isDeleting}

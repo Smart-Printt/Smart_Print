@@ -23,6 +23,7 @@ const CUSTOMER_NAV: NavItem[] = [
 const STAFF_NAV: NavItem[] = [
   { to: '/staff', label: 'Queue', icon: 'shop' },
   { to: '/staff/pricing', label: 'Pricing', icon: 'bindings' },
+  { to: '/staff/analytics', label: 'Analytics', icon: 'chart' },
   { to: '/profile', label: 'Profile', icon: 'profile' },
 ]
 
@@ -33,6 +34,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: '/admin/staff', label: 'Staff', icon: 'profile' },
   { to: '/admin/pricing', label: 'Pricing', icon: 'bindings' },
   { to: '/admin/refunds', label: 'Refunds', icon: 'gift' },
+  { to: '/admin/analytics', label: 'Analytics', icon: 'chart' },
 ]
 
 function navForRole(role: UserRole): NavItem[] {
@@ -113,11 +115,7 @@ export function AppShell() {
           <div className="shell__topbar-brand">
             <BrandMark />
           </div>
-          <button
-            aria-label="Sign out"
-            onClick={logout}
-            style={{ background: 'none', border: 'none', color: 'var(--color-text-secondary)', cursor: 'pointer', display: 'flex' }}
-          >
+          <button aria-label="Sign out" onClick={logout} className="shell__topbar-signout">
             <Icon name="logout" size={20} />
           </button>
         </header>

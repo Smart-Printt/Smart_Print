@@ -17,6 +17,7 @@ vi.mock('@/services/documentApi', () => ({
     list: () => mockDocList(),
     getOne: (id: string) => mockDocGetOne(id),
     upload: vi.fn(),
+    printIssues: () => Promise.resolve({ analyzed: true, issues: [] }),
   },
 }))
 
@@ -235,6 +236,10 @@ describe('PrintFlowPage - multi-document order flow', () => {
       completedAt: null,
       cancelledAt: null,
       position: 1,
+      estimatedWaitMinutes: null,
+      estimatedWaitRange: null,
+      estimateBasis: null,
+      estimateStatus: null,
     }
     mockQueueGetForOrder.mockResolvedValue(queueEntry)
 

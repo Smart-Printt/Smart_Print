@@ -97,7 +97,7 @@ export function AdminPricingPage() {
       {error ? (
         <ErrorState error={error} onRetry={loadRules} />
       ) : (
-        <div style={{ display: 'grid', gap: 24, gridTemplateColumns: '1fr' }}>
+        <div className="split-grid">
           <div>
             <p style={{ fontWeight: 800, marginBottom: 12 }}>Pricing rules</p>
             {pricingRules === null ? (

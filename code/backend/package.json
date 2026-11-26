@@ -13,6 +13,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "faculty:import": "ts-node scripts/importFaculty.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "jest --runInBand",

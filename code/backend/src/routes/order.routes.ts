@@ -12,5 +12,6 @@ orderRouter.post('/', orderController.create);
 orderRouter.get('/', orderController.list);
 // Declared before '/:id' so "summary" is not read as an order id.
 orderRouter.get('/summary', requireRole('ADMIN'), orderController.summary);
+orderRouter.get('/by-code/:orderCode', requireRole('ADMIN', 'SHOP_STAFF'), orderController.getByCode);
 orderRouter.get('/:id', orderController.getOne);
 orderRouter.patch('/:id/cancel', orderController.cancel);

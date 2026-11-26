@@ -8,6 +8,7 @@ import { lockOrder, lockShop, transitionOrder } from './orderLocks';
 import * as documentService from './document.service';
 import * as pricingService from './pricing.service';
 import * as queueService from './queue.service';
+import { publishShopQueueChanged } from './queueEvents';
 import * as shopService from './shop.service';
 import {
   CreateOrderInput,
@@ -18,7 +19,7 @@ import {
   SafeOrderItem,
   SafeOrderStatusEvent,
 } from '../types/order.types';
-import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { OrderListQuery } from '../utils/orderListQuery';
 import { hashCreateOrderRequest } from '../utils/idempotency';
 import { generateOrderCode } from '../utils/orderCode';
@@ -497,6 +498,40 @@ export async function getOrderForRequester(
   return getOrderForUser(requestingUserId, orderId);
 }
 
+// Pickup lookup: staff scan the QR code on a student's order page (it encodes
+// the order code) and land here. ADMIN may look up any order; SHOP_STAFF only
+// orders of their own (ACTIVE) shop - re-derived from the database via
+// assertShopAccess. An order from another shop is reported as plain "not
+// found", so scanning can't be used to probe which codes exist elsewhere.
+export async function getOrderByCodeForStaff(
+  requestingUserId: string,
+  requestingUserRole: UserRole,
+  rawOrderCode: unknown,
+): Promise<SafeOrder> {
+  if (typeof rawOrderCode !== 'string' || rawOrderCode.trim().length === 0) {
+    throw new ValidationError('Order code is required');
+  }
+  const orderCode = rawOrderCode.trim().toUpperCase();
+  if (orderCode.length > 64) {
+    throw new ValidationError('Order code is too long');
+  }
+
+  const order = await prisma.order.findUnique({ where: { orderCode }, include: ORDER_INCLUDE });
+  if (!order) {
+    throw new NotFoundError('Order not found');
+  }
+
+  try {
+    await shopService.assertShopAccess(requestingUserId, requestingUserRole, order.shopId);
+  } catch (err) {
+    if (err instanceof ForbiddenError && requestingUserRole === 'SHOP_STAFF') {
+      throw new NotFoundError('Order not found');
+    }
+    throw err;
+  }
+  return toSafeOrder(order);
+}
+
 // Same not-found-vs-not-owned indistinguishability pattern as documents: a
 // student probing another student's order ID gets a plain 404.
 async function findOwnedOrderOrThrow(userId: string, orderId: string): Promise<OrderWithRelations> {
@@ -589,6 +624,8 @@ export async function cancelOrder(
 
     return tx.order.findUniqueOrThrow({ where: { orderId }, include: ORDER_INCLUDE });
   });
+
+  publishShopQueueChanged(order.shopId);
 
   return toSafeOrder(updated);
 }

@@ -8,7 +8,9 @@ import { createCorsMiddleware } from './middleware/cors.middleware';
 import { errorHandler } from './middleware/errorHandler';
 import { notFoundHandler } from './middleware/notFound';
 import { createRateLimiters } from './middleware/rateLimit.middleware';
+import { adminAnalyticsRouter } from './routes/adminAnalytics.routes';
 import { adminStaffRouter } from './routes/adminStaff.routes';
+import { assistantRouter } from './routes/assistant.routes';
 import { authRouter } from './routes/auth.routes';
 import { documentRouter } from './routes/document.routes';
 import { healthRouter } from './routes/health.route';
@@ -20,6 +22,7 @@ import { queueRouter } from './routes/queue.routes';
 import { refundRouter } from './routes/refund.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopPricingRouter } from './routes/shopPricing.routes';
+import { shopAnalyticsRouter } from './routes/shopAnalytics.routes';
 import { shopQueueRouter } from './routes/shopQueue.routes';
 import { testRouter } from './routes/test.routes';
 
@@ -75,8 +78,11 @@ export function createApp(options: CreateAppOptions = {}): Application {
   app.use('/api/shops', shopRouter);
   app.use('/api/shops', shopPricingRouter);
   app.use('/api/shops', shopQueueRouter);
+  app.use('/api/shops', shopAnalyticsRouter);
   app.use('/api/pricing', pricingRouter);
+  app.use('/api/assistant', assistantRouter);
   app.use('/api/admin/staff', adminStaffRouter);
+  app.use('/api/admin/analytics', adminAnalyticsRouter);
 
   // Development/testing-only role-middleware exercise routes - see
   // routes/test.routes.ts. Never mounted in production.

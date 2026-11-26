@@ -12,6 +12,9 @@ export interface SafeDocument {
   fileHash: string;
   pageCount: number | null;
   uploadedAt: Date;
+  // Set on the list endpoint only: true once any order references this
+  // document, which is exactly when deletion is refused.
+  isUsedInOrder?: boolean;
 }
 
 export interface UploadedFileInput {

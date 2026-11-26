@@ -5,6 +5,7 @@ import { Response } from 'express';
 
 import * as documentService from '../services/document.service';
 import { DownloadableDocument } from '../services/document.service';
+import * as printIssuesService from '../services/documents/printIssues.service';
 import { AuthenticatedRequest } from '../types/auth.types';
 import { asyncHandler } from '../utils/asyncHandler';
 import { UnauthorizedError, ValidationError } from '../utils/errors';
@@ -86,6 +87,16 @@ function sendDocument(
     }
   });
 }
+
+// Advisory pre-payment checks (blank last page, orientation, tiny text, low
+// resolution). Paper size comes from the query: it is a print setting, not a
+// property of the stored document.
+export const printIssues = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const userId = requireUserId(req);
+  const paperSize = printIssuesService.parsePaperSize(req.query.paperSize);
+  const report = await printIssuesService.getPrintIssuesForUser(userId, req.params.id, paperSize);
+  res.status(200).json({ success: true, data: report });
+});
 
 export const download = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const user = requireUser(req);
